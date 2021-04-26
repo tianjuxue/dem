@@ -62,7 +62,7 @@ def yade_simulate():
     width = base - offset
     length = base + offset
     height = base
-    center_distance = 1
+    center_distance = 1.2
     center_height = 5
 
     n_row, n_col = (5, 5)
