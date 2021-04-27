@@ -1,5 +1,6 @@
 import numpy as onp
 import matplotlib.pyplot as plt
+import argparse
 from . import arguments
 onp.random.seed(0)
 
@@ -8,7 +9,7 @@ def get_angles(num_division):
     return onp.linspace(0, 2 * onp.pi, num_division + 1)[:-1]
 
 
-def generate_radius_samples(num_samps):
+def generate_radius_samples(num_samps, num_division=64):
     '''Generate multivariate Gaussian samples.
     Each sample is a vector of radius.
 
@@ -29,7 +30,6 @@ def generate_radius_samples(num_samps):
     def mean(x):
         return 1.
 
-    num_division = 64
     angles = get_angles(num_division)
  
     kernel_matrix = onp.zeros((num_division, num_division))
@@ -169,6 +169,14 @@ def squareSDF(x, y):
     return sdf
 
 
+def generate_boundary_data():
+    n = 1000
+    theta = onp.random.uniform(0., 2*onp.pi, n)
+    coo = onp.stack([onp.cos(theta), onp.sin(theta)]).T
+    sdf = onp.zeros((n, 1))
+    return coo, sdf
+
+
 def generate_supervised_data(args):
     n = 1000
     xy_min = [-args.domain_length, -args.domain_length]
@@ -180,9 +188,6 @@ def generate_supervised_data(args):
 
 
 def main(args):
-
-    generate_supervised_data(args)
-    exit()
 
     radius_samples = generate_radius_samples(num_samps=1000)
     boundary_points = compute_boundary_points(radius_samples)

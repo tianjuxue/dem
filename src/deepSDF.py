@@ -154,13 +154,11 @@ def train(args):
 
 
     def plot_sample():
-        sample_index = 1
-        radius_samples = np.array(np.load(os.path.join(args.dir + 'numpy/training/radius_samples.npy')))[:100]
+        sample_index = 0
+        radius_samples = np.array(np.load(os.path.join(args.dir, 'numpy/training/radius_samples.npy')))[:100]
         plot_Eiknoal_points(radius_samples[sample_index], eikonal_points[sample_index, ..., 0], eikonal_points[sample_index, ..., 1])
         plt.show()
 
-
-    # plot_sample()
 
     # Load training data and shuffle indices
     boundary_points = np.array(np.load(os.path.join(args.dir, 'numpy/training/boundary_points.npy')))[:100]
@@ -169,6 +167,8 @@ def train(args):
     args.sample_size = boundary_points.shape[0]
     indices = onp.random.permutation(args.sample_size)
     train_indices, test_indices, train_loader, test_loader = shuffle_data(indices, args)
+
+    # plot_sample()
 
     # Prepare for training
     opt_init, opt_update, get_params = optimizers.adam(step_size=args.lr)
