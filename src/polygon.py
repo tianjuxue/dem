@@ -1,61 +1,30 @@
 import numpy as onp
 import jax
 import jax.numpy as np
+from jax import grad, jit, vmap, value_and_grad
+from jax.experimental import optimizers
 import argparse
 import os
 import matplotlib.pyplot as plt
-from .data_generator import generate_radius_samples
+from .general_utils import shuffle_data, show_contours, profile, d_to_line_segs, sign_to_line_segs
+from .data_generator import generate_supervised_data
 
 
-@jax.jit
-def d_to_line_seg(P, A, B):
-    AB = B - A
-    BP = P - B
-    AP = P - A
-    AB_BP = np.dot(AB, BP)
-    AB_AP = np.dot(AB, AP)
+jax.config.update('jax_platform_name', 'cpu')
 
-    def f1(_):
-        return np.sqrt(np.sum(BP**2))
-
-    def f2(_):
-        return np.sqrt(np.sum(AP**2)) 
-
-    def f3(_):
-        mod = np.sqrt(np.sum(AB**2))
-        return np.absolute(np.cross(AB, AP)) / mod
-
-    def f(_):
-        return jax.lax.cond(AB_AP < 0., f2, f3, operand=None)
-
-    return jax.lax.cond(AB_BP > 0., f1, f, operand=None)
-
-d_to_line_segs = jax.vmap(d_to_line_seg, in_axes=(None, 0, 0), out_axes=0)
+onp.random.seed(0)
+key = jax.random.PRNGKey(0)
 
 
-@jax.jit
-def sign_to_line_seg(P, A, B):
-    O = np.array([0., 0.])
-    OA = A - O
-    OB = B - O
-    OP = P - O
-    AB = B - A
-    AP = P - A
-    OAxOB = np.cross(OA, OB)
-    OAxOP = np.cross(OA, OP)
-    OBxOP = np.cross(OB, OP)
-    OAxAB = np.cross(OA, AB)
-    ABxAP = np.cross(AB, AP)
-
-    def f2(_):
-        return jax.lax.cond(ABxAP * OAxAB < 0., lambda _:1., lambda _:-1., operand=None)
-
-    def f1(_):
-        return jax.lax.cond(OAxOB * OBxOP > 0., lambda _:1., f2, operand=None)
-
-    return  jax.lax.cond(OAxOB * OAxOP < 0., lambda _:1., f1, operand=None)
-
-sign_to_line_segs = jax.vmap(sign_to_line_seg, in_axes=(None, 0, 0), out_axes=0)
+parser = argparse.ArgumentParser()                
+parser.add_argument('--dim', type=int, default=2)
+parser.add_argument('--latent_size', type=int, default=64)
+parser.add_argument('--batch_size', type=int, default=64)
+parser.add_argument('--n_epochs', type=int, default=1000)  
+parser.add_argument('--lr', type=float, default=1e-3)
+parser.add_argument('--domain_length', type=float, default=2.)
+parser.add_argument('--dir', type=str, default='data')
+args = parser.parse_args()
 
 
 @jax.jit
@@ -65,43 +34,70 @@ def single_forward(radius_sample, input_point):
     angles_rolled = np.roll(angles, -1)
     pointsA =  np.vstack([radius_sample*np.cos(angles), radius_sample*np.sin(angles)]).T
     pointsB = np.vstack([radius_sample_rolled*np.cos(angles_rolled), radius_sample_rolled*np.sin(angles_rolled)]).T
-    result = np.min(d_to_line_segs(input_point, pointsA, pointsB)) * np.prod(sign_to_line_segs(input_point, pointsA, pointsB))
+    sign = np.where(np.any(sign_to_line_segs(input_point, pointsA, pointsB)), -1., 1.)
+    result = np.min(d_to_line_segs(input_point, pointsA, pointsB)) * sign
     return result
 
 batch_forward = jax.vmap(single_forward, in_axes=(None, 0), out_axes=0)
 
 
-def test(args):
-    # radius_sample = np.array(np.load(os.path.join(args.dir, 'numpy/training/radius_samples.npy')))[0]
-    radius_sample = generate_radius_samples(100, num_division=256)[2]
- 
-    P = np.array([0.00111, 0.00111])
-    print(single_forward(radius_sample, P))
- 
-    xgrid = np.linspace(-args.domain_length, args.domain_length, 1000)
-    x1, x2 = np.meshgrid(xgrid, xgrid)
-    xx = np.vstack([x1.ravel(), x2.ravel()]).T
-    out = np.reshape(batch_forward(radius_sample, xx), x1.shape)
+@jit
+def update(params, opt_state, indices, points, distances):
+    value, grads = value_and_grad(loss)(params, indices, points, distances)
+    opt_state = opt_update(0, grads, opt_state) 
+    return get_params(opt_state), opt_state, value
 
-    value, grads = jax.jit(jax.value_and_grad(lambda radius_sample, xx: np.sum(batch_forward(radius_sample, xx))))(radius_sample, P.reshape(1, -1))
 
-    print(value)
-    print(grads)
+def loss(params, indices, points, distances):
+    batch_points = points[indices]
+    batch_distances = distances[indices]
+    batch_predicted = batch_forward(params, batch_points).reshape(-1, 1)
+    assert batch_predicted.shape == batch_distances.shape
+    loss_value = np.sum((batch_predicted - batch_distances)**2)
+    params_rolled = np.roll(params, -1)
+    reg = np.sum((params - params_rolled)**2)
+    return loss_value + 1e-1*reg
 
-    plt.figure(num=0, figsize=(8, 8))
-    plt.contourf(x1, x2, out, levels=50, cmap='seismic')
-    plt.colorbar()
-    contours = np.linspace(-1., 1., 11)
-    plt.contour(x1, x2, out, contours, colors=['black']*len(contours))
-    plt.contour(x1, x2, out, [0.], colors=['red'])
-    plt.axis('equal')
-    x_origin = np.array([[0., 0.]])
+opt_init, opt_update, get_params = optimizers.adam(step_size=args.lr)
+
+
+def train():
+    points, distances = generate_supervised_data(args)
+    points = np.array(points)
+    distances = np.array(distances)
+
+    # boundary_points = np.array(np.load(os.path.join(args.dir, 'numpy/training/boundary_points.npy')))[:100]
+    # points = boundary_points[0]
+    # distances = np.zeros((len(points), 1))
+
+    args.sample_size = points.shape[0]
+    indices = onp.random.permutation(args.sample_size)
+    train_indices, test_indices, train_loader, test_loader = shuffle_data(indices, args)
+
+    params = np.ones(args.latent_size)
+    # params = np.sqrt(np.sum(points**2, axis=-1))
+
+    opt_state = opt_init(params)
+
+    for epoch in range(args.n_epochs):
+        train_loss = 0
+        for batch_idx, indices in enumerate(train_loader):
+            indices = np.array(indices)
+            params, opt_state, loss_value = update(params, opt_state, indices, points, distances)
+            train_loss += loss_value
+
+        train_loss_per_sample = train_loss / len(train_loader.dataset)
+        if epoch % 10 == 0:
+            print(f"Epoch {epoch}: Per sample loss is {train_loss_per_sample}")
+
+    show_contours(batch_forward, params, 0, args)
+
+
+def profile_test():
+    profile(batch_forward, args)
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()        
-    parser.add_argument('--domain_length', type=float, default=2.)
-    parser.add_argument('--dir', type=str, default='data')
-    args = parser.parse_args()
-    test(args)
+    # profile_test()
+    train()
     plt.show()

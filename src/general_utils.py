@@ -1,7 +1,58 @@
+import numpy as onp
+import jax
+import jax.numpy as np
 from torch.utils.data import Dataset, DataLoader
 import torch
+import time
+import glob
+import meshio
+import os
+import matplotlib.pyplot as plt
 
-torch.manual_seed(0)
+
+jax.config.update('jax_platform_name', 'cpu')
+
+onp.random.seed(0)
+key = jax.random.PRNGKey(0)
+
+
+@jax.jit
+def d_to_line_seg(P, A, B):
+    '''Distance of a point P to a line segment AB'''
+    AB = B - A
+    BP = P - B
+    AP = P - A
+    AB_BP = np.dot(AB, BP)
+    AB_AP = np.dot(AB, AP)
+    mod = np.sqrt(np.sum(AB**2))
+    tmp2 = np.absolute(np.cross(AB, AP)) / mod
+    tmp1 = np.where(AB_AP < 0., np.sqrt(np.sum(AP**2)), tmp2)
+    return np.where(AB_BP > 0., np.sqrt(np.sum(BP**2)), tmp1)
+
+d_to_line_segs = jax.vmap(d_to_line_seg, in_axes=(None, 0, 0), out_axes=0)
+
+
+@jax.jit
+def sign_to_line_seg(P, A, B):
+    ''' If P is inside the triangle OAB, return True, otherwise return False.
+    '''
+    O = np.array([0., 0.])
+    OA = A - O
+    OB = B - O
+    OP = P - O
+    AB = B - A
+    AP = P - A
+    OAxOB = np.cross(OA, OB)
+    OAxOP = np.cross(OA, OP)
+    OBxOP = np.cross(OB, OP)
+    OAxAB = np.cross(OA, AB)
+    ABxAP = np.cross(AB, AP)
+    tmp2 = np.where(ABxAP * OAxAB < 0., False, True)
+    tmp1 = np.where(OAxOB * OBxOP > 0., False, tmp2)
+    return  np.where(OAxOB * OAxOP < 0., False, tmp1)
+
+sign_to_line_segs = jax.vmap(sign_to_line_seg, in_axes=(None, 0, 0), out_axes=0)
+
 
 def shuffle_data(data, args):
     train_portion = 0.9
@@ -15,3 +66,78 @@ def shuffle_data(data, args):
     test_loader = DataLoader(test_data, batch_size=args.batch_size, shuffle=True)
     return train_data, test_data, train_loader, test_loader
 
+
+def show_contours(batch_forward, params, fig_no, args):
+    xgrid = np.linspace(-args.domain_length, args.domain_length, 100)
+    x1, x2 = np.meshgrid(xgrid, xgrid)
+    xx = np.vstack([x1.ravel(), x2.ravel()]).T
+    out = np.reshape(batch_forward(params, xx), x1.shape)
+    plt.figure(num=fig_no, figsize=(8, 8))
+    plt.contourf(x1, x2, out, levels=50, cmap='seismic')
+    plt.colorbar()
+    contours = np.linspace(-1., 1., 11)
+    plt.contour(x1, x2, out, contours, colors=['black']*len(contours))
+    plt.contour(x1, x2, out, [0.], colors=['red'])
+    plt.axis('equal')
+    x_origin = np.array([[0., 0.]])
+
+
+def profile(forward, args):
+    def func(latent_params, batch_points):
+        return np.sum(forward(latent_params, batch_points))
+    start = time.time()
+    # latent_params = generate_radius_samples(num_samps=100, num_division=args.latent_size)[0]
+    latent_params = np.load('data/numpy/training/radius_samples.npy')[0]
+    batch_points = jax.random.normal(key, (1000, args.dim))
+    value, grads = jax.jit(jax.value_and_grad(func))(latent_params, batch_points)
+    print(value)
+    print(grads)
+    end = time.time()
+    print(f"Wall time eplapsed: {end - start}")
+
+
+def clean_folder(directory_path):
+    print("Clean folder...")
+    files = glob.glob(directory_path)
+    for f in files:
+        try:
+            os.remove(f)
+        except Exception as e:
+            print(f"Failed to delete {f}, reason: {e}")
+
+
+def output_vtk(batch_forward, params, step, sample_index, args):
+    network_params, latent_params = params
+    latent = latent_params[sample_index]
+
+    if sample_index == 1:
+        latent = (latent_params[0] + latent_params[1]) / 2
+
+    print(f"Output vtk of sample {sample_index}")
+    refinement = 6
+    division = onp.power(2, refinement)
+    X1D = onp.linspace(-args.domain_length, args.domain_length, division + 1)
+    Y1D = onp.linspace(-args.domain_length, args.domain_length, division + 1)
+    X_coo, Y_coo = onp.meshgrid(X1D, Y1D, indexing='ij')
+
+    if step == 0:
+        clean_folder(os.path.join(args.dir, "vtk/sample_index_{sample_index}/*"))
+
+    cells = []
+    for i in range(division):
+        for j in range(division):
+            cells.append([i*(division + 1) + j, (i + 1)*(division + 1) + j, (i + 1)*(division + 1) + j + 1, i*(division + 1) + j + 1])
+    cells = [('quad', onp.array(cells))]
+    X_coo_flat = X_coo.flatten()
+    Y_coo_flat = Y_coo.flatten()
+    Z_coo_flat = onp.zeros_like(X_coo_flat)
+
+    coo = onp.concatenate((X_coo_flat.reshape(-1, 1), Y_coo_flat.reshape(-1, 1)), axis=1)
+    repeated_latent = onp.repeat(onp.expand_dims(latent, axis=0), len(coo), axis=0)
+    inputs = onp.concatenate((repeated_latent, coo), axis=1)
+    solution_flat = onp.array(batch_forward(network_params,  inputs))
+    solution_flat = solution_flat.reshape(-1)
+
+    points = onp.stack((X_coo_flat, Y_coo_flat, Z_coo_flat), axis=1)
+    point_data = {'u': solution_flat}
+    meshio.Mesh(points, cells, point_data=point_data).write(os.path.join(args.dir, f"vtk/sample_index_{sample_index}/u{step}.vtk"))

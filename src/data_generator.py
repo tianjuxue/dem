@@ -1,8 +1,15 @@
 import numpy as onp
+import jax
+import jax.numpy as np
 import matplotlib.pyplot as plt
 import argparse
 from . import arguments
+from .general_utils import d_to_line_segs, sign_to_line_segs
+
+jax.config.update('jax_platform_name', 'cpu')
+
 onp.random.seed(0)
+key = jax.random.PRNGKey(0)
 
 
 def get_angles(num_division):
@@ -109,67 +116,18 @@ def circleSDF(x, y):
     return onp.sqrt(x**2 + y**2) - 1
 
 
-def distance_function_line_segement(P, A=[-1, 0], B=[1, 0]):     
-    AB = [None, None]
-    AB[0] = B[0] - A[0]
-    AB[1] = B[1] - A[1]
-  
-    BP = [None, None]
-    BP[0] = P[0] - B[0]
-    BP[1] = P[1] - B[1]
-
-    AP = [None, None]
-    AP[0] = P[0] - A[0]
-    AP[1] = P[1] - A[1]
-  
-    AB_BP = AB[0] * BP[0] + AB[1] * BP[1]
-    AB_AP = AB[0] * AP[0] + AB[1] * AP[1]
-  
-    y = P[1] - B[1]
-    x = P[0] - B[0]
-    df1 = onp.sqrt(x**2 + y**2) 
-
-    y = P[1] - A[1]
-    x = P[0] - A[0]
-    df2 = onp.sqrt(x**2 + y**2)
-
-    x1 = AB[0]
-    y1 = AB[1]
-    x2 = AP[0]
-    y2 = AP[1]
-    mod = onp.sqrt(x1**2 + y1**2)
-    df3 = onp.absolute(x1 * y2 - y1 * x2) / mod
-
-    if AB_BP > 0:
-        df = df1
-    elif AB_AP < 0:
-        df = df2
-    else:
-        df = df3
-
-    return df
-
-
 def squareSDF(x, y):
-    A = [-1, -1]
-    B = [-1, 1]
-    C = [1, 1]
-    D = [1, -1]
+    points = np.vstack([x, y]).T
+    square_corners = np.array([[1., 1.], [-1., 1.], [-1., -1.], [1., -1.]])
+    square_corners_rolled = np.roll(square_corners, 1, axis=0)
     sdf = onp.zeros_like(x)
     for i in range(len(sdf)):
-        d1 = distance_function_line_segement([x[i], y[i]], A, B)
-        d2 = distance_function_line_segement([x[i], y[i]], B, C)
-        d3 = distance_function_line_segement([x[i], y[i]], C, D)
-        d4 = distance_function_line_segement([x[i], y[i]], D, A)  
-        d = onp.min(onp.array([d1, d2, d3, d4]))  
-        if x[i] < 1 and x[i] > -1 and y[i] < 1 and y[i] > -1:
-            d = -d
-        sdf[i] = d
-
+        sign = np.where(np.any(sign_to_line_segs(points[i], square_corners, square_corners_rolled)), -1., 1.)
+        sdf[i] = np.min(d_to_line_segs(points[i], square_corners, square_corners_rolled)) * sign
     return sdf
 
 
-def generate_boundary_data():
+def generate_circle_boundary_data():
     n = 1000
     theta = onp.random.uniform(0., 2*onp.pi, n)
     coo = onp.stack([onp.cos(theta), onp.sin(theta)]).T
@@ -182,13 +140,12 @@ def generate_supervised_data(args):
     xy_min = [-args.domain_length, -args.domain_length]
     xy_max = [args.domain_length, args.domain_length]
     coo = onp.random.uniform(low=xy_min, high=xy_max, size=(n, 2))
-    sdf = circleSDF(coo[:, 0], coo[:, 1]).reshape(-1, 1)
+    sdf = squareSDF(coo[:, 0], coo[:, 1]).reshape(-1, 1)
     # samples = onp.concatenate((coordinates, targets.reshape(-1, 1)), axis=1)
     return coo, sdf
 
 
 def main(args):
-
     radius_samples = generate_radius_samples(num_samps=1000)
     boundary_points = compute_boundary_points(radius_samples)
     eikonal_points = generate_eikonal_points(radius_samples)
