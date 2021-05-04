@@ -79,7 +79,8 @@ def show_contours(batch_forward, params, fig_no, args):
     plt.contour(x1, x2, out, contours, colors=['black']*len(contours))
     plt.contour(x1, x2, out, [0.], colors=['red'])
     plt.axis('equal')
-    x_origin = np.array([[0., 0.]])
+    plt.xlim([-4, 4])
+    plt.ylim([-4, 4])
 
 
 def profile(forward, args):

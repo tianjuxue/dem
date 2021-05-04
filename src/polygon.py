@@ -27,13 +27,18 @@ parser.add_argument('--dir', type=str, default='data')
 args = parser.parse_args()
 
 
-@jax.jit
-def single_forward(radius_sample, input_point):
+def get_points(radius_sample):
     radius_sample_rolled = np.roll(radius_sample, -1)
     angles = np.linspace(0, 2 * np.pi, len(radius_sample) + 1)[:-1]
     angles_rolled = np.roll(angles, -1)
     pointsA =  np.vstack([radius_sample*np.cos(angles), radius_sample*np.sin(angles)]).T
     pointsB = np.vstack([radius_sample_rolled*np.cos(angles_rolled), radius_sample_rolled*np.sin(angles_rolled)]).T
+    return pointsA, pointsB
+
+
+@jax.jit
+def single_forward(radius_sample, input_point):
+    pointsA, pointsB = get_points(radius_sample)
     sign = np.where(np.any(sign_to_line_segs(input_point, pointsA, pointsB)), -1., 1.)
     result = np.min(d_to_line_segs(input_point, pointsA, pointsB)) * sign
     return result
