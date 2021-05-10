@@ -121,8 +121,9 @@ def squareSDF(x, y):
     square_corners = np.array([[1., 1.], [-1., 1.], [-1., -1.], [1., -1.]])
     square_corners_rolled = np.roll(square_corners, 1, axis=0)
     sdf = onp.zeros_like(x)
+    pointO = np.array([0., 0.])
     for i in range(len(sdf)):
-        sign = np.where(np.any(sign_to_line_segs(points[i], square_corners, square_corners_rolled)), -1., 1.)
+        sign = np.where(np.any(sign_to_line_segs(points[i], pointO, square_corners, square_corners_rolled)), -1., 1.)
         sdf[i] = np.min(d_to_line_segs(points[i], square_corners, square_corners_rolled)) * sign
     return sdf
 

@@ -33,10 +33,9 @@ d_to_line_segs = jax.vmap(d_to_line_seg, in_axes=(None, 0, 0), out_axes=0)
 
 
 @jax.jit
-def sign_to_line_seg(P, A, B):
+def sign_to_line_seg(P, O, A, B):
     ''' If P is inside the triangle OAB, return True, otherwise return False.
     '''
-    O = np.array([0., 0.])
     OA = A - O
     OB = B - O
     OP = P - O
@@ -51,7 +50,7 @@ def sign_to_line_seg(P, A, B):
     tmp1 = np.where(OAxOB * OBxOP > 0., False, tmp2)
     return  np.where(OAxOB * OAxOP < 0., False, tmp1)
 
-sign_to_line_segs = jax.vmap(sign_to_line_seg, in_axes=(None, 0, 0), out_axes=0)
+sign_to_line_segs = jax.vmap(sign_to_line_seg, in_axes=(None, None, 0, 0), out_axes=0)
 
 
 def shuffle_data(data, args):
