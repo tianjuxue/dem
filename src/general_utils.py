@@ -9,9 +9,6 @@ import meshio
 import os
 import matplotlib.pyplot as plt
 
-
-jax.config.update('jax_platform_name', 'cpu')
-
 onp.random.seed(0)
 key = jax.random.PRNGKey(0)
 

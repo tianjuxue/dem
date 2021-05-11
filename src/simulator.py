@@ -2,15 +2,21 @@ import numpy as onp
 import jax
 import jax.numpy as np
 from jax import grad, jit, vmap, value_and_grad
+from jax.lib import xla_bridge
 import argparse
 import json
 import os
+import time
 from functools import partial
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
+
+# jax.config.update('jax_platform_name', 'cpu')
+
 from .polygon import args, get_phy_seeds, batch_get_phy_seeds, batch_eval_sdf, batch_grad_sdf, eval_mass, reference_to_physical
 from .general_utils import show_contours
 from . import arguments
+
 
 #TODO: global variable
 gravity = 9.8
@@ -219,7 +225,7 @@ def plot_animation(seeds_collect=None):
     anim = FuncAnimation(fig, update, frames=len(seeds_collect),
                         init_func=init, blit=True)
     anim.save('data/mp4/test.mp4', fps=30, dpi=300)
-    plt.show()
+    # plt.show()
 
 
 def compute_energy(states, area, inertia):
@@ -267,15 +273,15 @@ def initialize_states_25_objects():
     perturb = jax.random.uniform(key, (2, n_objects), np.float32, -0.5, 0.5)
     xx = np.concatenate([x1.reshape(1, -1), x2.reshape(1, -1)], axis=0) + perturb
     states = np.concatenate([xx, theta, np.zeros((3, n_objects))], axis=0)
-
     return states
 
 
 def drop_a_stone_2d():
+    start_time = time.time()
     params = np.load('data/numpy/training/radius_samples.npy')[1]
     area, inertia, ref_centroid = eval_mass(params)
     states_initial = initialize_states_25_objects()
-    num_steps = 6000
+    num_steps = 10000
     states = states_initial
     seeds_collect = []
     energy = []
@@ -289,9 +295,13 @@ def drop_a_stone_2d():
             print(f"\nstep {i}, \nenergy={e}, total energy={np.sum(e)}")
             energy.append(e)
 
+    end_time = time.time()
+    print(f"Time elapsed {end_time-start_time}")
+    print(f"Platform: {xla_bridge.get_backend().platform}")
+
     plot_energy(np.sum(np.array(energy), axis=-1))
     plot_animation(seeds_collect)
-    
+
 
 def debug():
     params = np.ones(args.latent_size)

@@ -6,7 +6,6 @@ import argparse
 from . import arguments
 from .general_utils import d_to_line_segs, sign_to_line_segs
 
-jax.config.update('jax_platform_name', 'cpu')
 
 onp.random.seed(0)
 key = jax.random.PRNGKey(0)

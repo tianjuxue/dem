@@ -10,8 +10,6 @@ from .general_utils import shuffle_data, show_contours, profile, d_to_line_segs,
 from .data_generator import generate_supervised_data
 
 
-jax.config.update('jax_platform_name', 'cpu')
-
 onp.random.seed(0)
 key = jax.random.PRNGKey(0)
 

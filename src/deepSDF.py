@@ -17,7 +17,7 @@ import json
 from .data_generator import plot_Eiknoal_points
 from .general_utils import shuffle_data, profile, clean_folder, output_vtk
 
-jax.config.update('jax_platform_name', 'cpu')
+# jax.config.update('jax_platform_name', 'cpu')
 
 onp.random.seed(0)
 key = jax.random.PRNGKey(0)

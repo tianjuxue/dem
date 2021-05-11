@@ -19,7 +19,7 @@ from .general_utils import shuffle_data, show_contours
 from .data_generator import generate_supervised_data
 
 
-jax.config.update('jax_platform_name', 'cpu')
+# jax.config.update('jax_platform_name', 'cpu')
 
 onp.random.seed(0)
 key = jax.random.PRNGKey(0)
