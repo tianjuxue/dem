@@ -7,12 +7,11 @@ import argparse
 import json
 import os
 import time
+import glob
+import shutil
 from functools import partial
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
-
-# jax.config.update('jax_platform_name', 'cpu')
-
 from .polygon import args, get_phy_seeds, batch_get_phy_seeds, batch_eval_sdf, batch_grad_sdf, eval_mass, reference_to_physical
 from .general_utils import show_contours
 from . import arguments
@@ -62,46 +61,19 @@ def get_frictionless_force(phy_seeds, level_set_func, level_set_grad):
     return forces
 
 
-def finite_difference(params, states, rhs):
-    # rhs, contact_reactions = rhs_func(params, states)
-    # print(contact_reactions)
-    # print("\n")
-
-    # dt = 1e-3
-    # alpha = 0.999**dt
-    
-    dt = 5*1e-4
-    alpha = 1.
-    # if np.sum(np.absolute(contact_reactions)) > 0.:
-    #     dt = dt/50.
-
-    # updated_states = states + dt * rhs
-    # updated_states = states + dt * rhs_func(params, states)
-
-    # updated_states = explicit_euler(params, states, rhs, dt=5*1e-4)
-    updated_states = runge_kutta_4(params, states, rhs, dt=5*1e-4)
-
-    # updated_states = np.concatenate([updated_states[:3,:], alpha**dt * updated_states[3:,:]], axis=0)
-
-    return updated_states
+def explicit_euler(variable, rhs, dt):
+    return variable + dt * rhs(variable)
 
 
-def explicit_euler(params, states, rhs, dt):
-    return states + dt * rhs(params, states)
-
-
-def runge_kutta_4(params, states, rhs, dt):
-    y_0 = states
-    k_0 = rhs(params, y_0)
-    k_1 = rhs(params, y_0 + dt/2 * k_0)
-    k_2 = rhs(params, y_0 + dt/2 * k_1)
-    k_3 = rhs(params, y_0 + dt * k_2)
+def runge_kutta_4(variable, rhs, dt):
+    y_0 = variable
+    k_0 = rhs(y_0)
+    k_1 = rhs(y_0 + dt/2 * k_0)
+    k_2 = rhs(y_0 + dt/2 * k_1)
+    k_3 = rhs(y_0 + dt * k_2)
     k = 1./6. * (k_0 + 2. * k_1 + 2. * k_2 + k_3)
     y_1 = y_0 + dt * k
     return y_1
-
- 
-
 
 
 def get_reaction(phy_seeds, x1, x2, forces):
@@ -166,24 +138,31 @@ batch_compute_wall_reaction = jax.vmap(compute_wall_reaction, in_axes=(None, Non
 
 
 @jax.jit
-def ode_rhs_func(params, states):
+def state_rhs_func(params, state):
     '''
     Parameter
     ---------
     params: numpy array of shape (n_params,)
-    states: numpy array of shape (6, n_objects)
+    state: numpy array of shape (6, n_objects)
+
+    Returns
+    -------
+    rhs: numpy array of shape (6, n_objects)
     '''
     area, inertia, ref_centroid = eval_mass(params)
-    x1, x2, theta, v1, v2, omega = states
-    n_objects = states.shape[1]
+    x1, x2, theta, v1, v2, omega = state
+    n_objects = state.shape[1]
     paired_reactions = batch_compute_mutual_reaction(params, ref_centroid, x1, x2, theta, np.arange(n_objects), x1, x2, theta, np.arange(n_objects))
     mutual_reactions = np.sum(paired_reactions, axis=1)
     wall_reactions = batch_compute_wall_reaction(params, ref_centroid, x1, x2, theta)
     contact_reactions = (mutual_reactions + wall_reactions) / np.array([[area, area, inertia]])
     reactions = contact_reactions + np.array([[0., -gravity, 0.]])
     rhs = np.concatenate([v1.reshape(1, -1), v2.reshape(1, -1), omega.reshape(1, -1), reactions.T], axis=0)
-    # return rhs, contact_reactions
     return rhs
+
+jac_rhs_params = jax.jacrev(state_rhs_func, argnums=(0))
+jac_rhs_state = jax.jacrev(state_rhs_func, argnums=(1))
+batch_jac_rhs_params = jax.jit(jax.vmap(jac_rhs_params, in_axes=(None, 0), out_axes=0))
 
 
 def plot_seeds(seeds, fig_no):
@@ -195,7 +174,7 @@ def plot_seeds(seeds, fig_no):
     plt.ylim([-1, 10])
 
 
-def plot_animation(seeds_collect=None):
+def plot_animation(seeds_collect, step=None):
     fig, ax = plt.subplots(figsize=(10, 10))
     xdata, ydata = [], []
     plt.plot([0, 20], [0, 0], color='red', linewidth=1)
@@ -222,14 +201,23 @@ def plot_animation(seeds_collect=None):
             lines[i].set_data(seeds[:, 0], seeds[:, 1])
         return lines
 
-    anim = FuncAnimation(fig, update, frames=len(seeds_collect),
-                        init_func=init, blit=True)
-    anim.save('data/mp4/test.mp4', fps=30, dpi=300)
+    anim = FuncAnimation(fig, update, frames=len(seeds_collect), init_func=init, blit=True)
+
+    if step is None:
+        anim.save(f'data/mp4/test.mp4', fps=30, dpi=300)
+    else:
+        if step == 0:
+            files = glob.glob(f'data/mp4/opt/*')
+            for f in files:
+                os.remove(f)
+            # shutil.rmtree(f'data/mp4/opt/', ignore_errors=True)
+        anim.save(f'data/mp4/opt/test{step}.mp4', fps=30, dpi=300)
+
     # plt.show()
 
 
-def compute_energy(states, area, inertia):
-    x1, x2, theta, v1, v2, omega = states
+def compute_energy(state, area, inertia):
+    x1, x2, theta, v1, v2, omega = state
     kinetic_energy = 1./2. * area * (v1**2 + v2**2) + 1./2. * inertia * omega**2
     potential_energy = area * gravity * x2
     total_energy = kinetic_energy + potential_energy
@@ -244,27 +232,27 @@ def plot_energy(energy):
     plt.savefig('data/pdf/energy.pdf')
 
 
-def initialize_states_1_object():
-    states = np.array([[10.],
+def initialize_state_1_object():
+    state = np.array([[10.],
                        [2.],
                        [0.],
                        [0.],
                        [0.],
                        [0.]])
-    return states
+    return state
 
 
-def initialize_states_3_objects():
-    states = np.array([[10., 10., 10.],
+def initialize_state_3_objects():
+    state = np.array([[10., 10., 10.],
                        [2., 6., 10.],
                        [0., 0., 0.],
                        [0., 0., 0.],
                        [0., 0., 0.],
                        [0., 0., 0.]])
-    return states
+    return state
 
 
-def initialize_states_25_objects():
+def initialize_state_25_objects():
     spacing = np.linspace(2., 18., 5)
     n_objects = len(spacing)**2
     x1, x2 = np.meshgrid(spacing, spacing, indexing='ij')
@@ -272,23 +260,36 @@ def initialize_states_25_objects():
     theta = jax.random.uniform(key, (1, n_objects), np.float32, 0., 2*np.pi)
     perturb = jax.random.uniform(key, (2, n_objects), np.float32, -0.5, 0.5)
     xx = np.concatenate([x1.reshape(1, -1), x2.reshape(1, -1)], axis=0) + perturb
-    states = np.concatenate([xx, theta, np.zeros((3, n_objects))], axis=0)
-    return states
+    state = np.concatenate([xx, theta, np.zeros((3, n_objects))], axis=0)
+    return state
+
+
+def solve_states(params, num_steps, dt):
+    state = initialize_state_1_object()
+    states = [state]
+    for i in range(num_steps):
+        rhs_func = lambda variable: state_rhs_func(params, variable)
+        state = runge_kutta_4(state, rhs_func, dt)
+        states.append(state)
+        # if i % 20 == 0:
+        #     print(f"States ODE \nstep {i}")
+    return np.array(states)
 
 
 def drop_a_stone_2d():
     start_time = time.time()
     params = np.load('data/numpy/training/radius_samples.npy')[1]
     area, inertia, ref_centroid = eval_mass(params)
-    states_initial = initialize_states_25_objects()
-    num_steps = 10000
-    states = states_initial
+    state = initialize_state_1_object()
+    num_steps = 1500
+    dt = 5*1e-4
     seeds_collect = []
     energy = []
     for i in range(num_steps):
-        states = finite_difference(params, states, ode_rhs_func)
-        x1, x2, theta, v1, v2, omega = states
-        e = compute_energy(states, area, inertia)
+        rhs_func = lambda variable: state_rhs_func(params, variable)
+        state = runge_kutta_4(state, rhs_func, dt)
+        x1, x2, theta, v1, v2, omega = state
+        e = compute_energy(state, area, inertia)
         if i % 20 == 0:
             phy_seeds = batch_get_phy_seeds(params, ref_centroid, x1, x2, theta)
             seeds_collect.append(phy_seeds)
