@@ -304,18 +304,6 @@ def drop_a_stone_2d():
     plot_animation(seeds_collect)
 
 
-def debug():
-    params = np.ones(args.latent_size)
-    # params = np.load('data/numpy/training/radius_samples.npy')[1]
-    print(params.shape)
-    polygon_area, polygon_inertia, polygon_centroid, seeds = eval_mass(params)
-    print(polygon_area)
-    print(polygon_inertia)
-    # print(polygon_centroid)
-    # show_contours(batch_forward, params, 0, args)
-    # plt.scatter(polygon_centroid[0], polygon_centroid[1])
-
-
 if __name__ == '__main__':
     drop_a_stone_2d()
     # debug()
