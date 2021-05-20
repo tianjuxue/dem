@@ -13,7 +13,6 @@ onp.random.seed(0)
 key = jax.random.PRNGKey(0)
 
 
-@jax.jit
 def d_to_line_seg(P, A, B):
     '''Distance of a point P to a line segment AB'''
     AB = B - A
@@ -26,10 +25,9 @@ def d_to_line_seg(P, A, B):
     tmp1 = np.where(AB_AP < 0., np.sqrt(np.sum(AP**2)), tmp2)
     return np.where(AB_BP > 0., np.sqrt(np.sum(BP**2)), tmp1)
 
-d_to_line_segs = jax.vmap(d_to_line_seg, in_axes=(None, 0, 0), out_axes=0)
+d_to_line_segs = jax.jit(jax.vmap(d_to_line_seg, in_axes=(None, 0, 0), out_axes=0))
 
 
-@jax.jit
 def sign_to_line_seg(P, O, A, B):
     ''' If P is inside the triangle OAB, return True, otherwise return False.
     '''
@@ -47,7 +45,7 @@ def sign_to_line_seg(P, O, A, B):
     tmp1 = np.where(OAxOB * OBxOP > 0., False, tmp2)
     return  np.where(OAxOB * OAxOP < 0., False, tmp1)
 
-sign_to_line_segs = jax.vmap(sign_to_line_seg, in_axes=(None, None, 0, 0), out_axes=0)
+sign_to_line_segs = jax.jit(jax.vmap(sign_to_line_seg, in_axes=(None, None, 0, 0), out_axes=0))
 
 
 def shuffle_data(data, args):
