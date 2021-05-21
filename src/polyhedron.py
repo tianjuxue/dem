@@ -1,6 +1,7 @@
 import numpy as onp
 import jax
 import jax.numpy as np
+from jax.numpy.linalg import norm
 import unittest
 import numpy.testing as nptest
 
@@ -89,7 +90,7 @@ def inertia_tensor_helper(O, D, E, F):
     '''
     Inertia tensor of a tetrahedron with vertices (O, D, E, F) w.r.t point O
     Reference: https://doi.org/10.1006/icar.1996.0243
-    unfortunately, it looks like the order of the vertices does matter when using this method. 
+    Unfortunately, it looks like the order of the vertices does matter when using this method. 
     '''    
     DO = D - O
     EO = E - O
@@ -110,30 +111,55 @@ def inertia_tensor_helper(O, D, E, F):
 
 
 
+#TODO: Unit test of these functions
 
 
-def d_to_line_seg(P, D, E, F):
+def d_to_triangle(P, P1, P2, P3):
+    '''
+    Distance of a point P to a triangle (P1, P2, P3)
+    References: 
+    https://math.stackexchange.com/questions/544946/determine-if-projection-of-3d-point-onto-plane-is-within-a-triangle
+    https://www.geogebra.org/m/ZuvmPjmy
+    '''
+    u = P2 - P1
+    v = P3 - P1
+    w = P3 - P2
+    n = np.cross(u, v)
+    r = P - P1  
+    s = P - P2
+    t = P - P3
+
+    n_square = np.sum(n*n)
+    c1 = np.dot(np.cross(u, r), n) / n_square
+    c2 = np.dot(np.cross(r, v), n) / n_square
+    c3 = 1 - c1 - c2
+
+    tmp5 = np.where(c3 < 0., norm(np.cross(r, u))/norm(u), norm(P - (c1*P1 + c2*P2 + c3*P3)))
+    tmp4 = np.where(c3 < 0., norm(r), norm(np.cross(r, v))/norm(v))
+    tmp3 = np.where(c2 < 0., tmp4, tmp5)
+    tmp2 = np.where(c3 < 0., norm(s), norm(np.cross(s, w))/norm(w))
+    tmp1 = np.where(c2 < 0., norm(t), tmp2)
+    return np.where(c1 < 0., tmp1, tmp3)
+
+d_to_triangles = jax.jit(jax.vmap(d_to_triangle, in_axes=(None, 0, 0, 0), out_axes=0))
 
 
-    
+def sign_to_tetrahedron(P, O, D, E, F):
+    ''' 
+    If P is inside the tetrahedron (O, D, E, F), return True, otherwise return False.
+    '''
+    DO = D - O
+    EO = E - O
+    FO = F - O
+    ED = E - D
+    FD = F - D
+    OD = O - D 
+    tmp3 = np.where(np.dot(np.cross(ED, FD), OD)*np.dot(np.cross(ED, FD), PD) < 0., False, True)
+    tmp2 = np.where(np.dot(np.cross(EO, FO), DO)*np.dot(np.cross(EO, FO), PO) < 0., False, tmp3)
+    tmp1 = np.where(np.dot(np.cross(DO, FO), EO)*np.dot(np.cross(DO, FO), PO) < 0., False, tmp2)
+    return np.where(np.dot(np.cross(DO, EO), FO)*np.dot(np.cross(DO, EO), PO) < 0., False, tmp1)
 
-
-
-
-    '''Distance of a point P to a line segment AB'''
-    AB = B - A
-    BP = P - B
-    AP = P - A
-    AB_BP = np.dot(AB, BP)
-    AB_AP = np.dot(AB, AP)
-    mod = np.sqrt(np.sum(AB**2))
-    tmp2 = np.absolute(np.cross(AB, AP)) / mod
-    tmp1 = np.where(AB_AP < 0., np.sqrt(np.sum(AP**2)), tmp2)
-    return np.where(AB_BP > 0., np.sqrt(np.sum(BP**2)), tmp1)
-
-d_to_line_segs = jax.jit(jax.vmap(d_to_line_seg, in_axes=(None, 0, 0), out_axes=0))
-
-
+sign_to_tetrahedra = jax.jit(jax.vmap(sign_to_tetrahedron, in_axes=(None, None, 0, 0, 0), out_axes=0))
 
 
 if __name__ == '__main__':

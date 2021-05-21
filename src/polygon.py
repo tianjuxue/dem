@@ -54,7 +54,7 @@ def eval_mass(params):
         np.sum(seedsA * seedsB, axis=1) + np.sum(seedsB * seedsB, axis=1))
     polygon_inertia = np.sum(triangle_inertias)
 
-    #TODO(Fix the bug of inertia calculation)
+    #TODO: Fix the bug of inertia calculation
 
     return polygon_area, polygon_inertia, polygon_centroid
 
