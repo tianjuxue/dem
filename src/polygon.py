@@ -86,8 +86,9 @@ def eval_sdf(params, ref_centroid, x1, x2, theta, phy_point):
     result = np.min(d_to_line_segs(phy_point, phy_seedsA, phy_seedsB)) * sign
     return result
 
-grad_sdf = jax.grad(eval_sdf, argnums=(5))
 batch_eval_sdf = jax.vmap(eval_sdf, in_axes=(None, None, None, None, None, 0), out_axes=0)
+
+grad_sdf = jax.grad(eval_sdf, argnums=(5))
 batch_grad_sdf = jax.vmap(grad_sdf, in_axes=(None, None, None, None, None, 0), out_axes=0)
 
 

@@ -4,9 +4,9 @@ import jax.numpy as np
 from jax.numpy.linalg import norm
 import unittest
 import numpy.testing as nptest
+from .arguments import args
 
-
-dim = 3
+dim = args.dim
 
 class TestTetrahedron(unittest.TestCase):
 
@@ -69,7 +69,7 @@ def tetrahedron_center(O, D, E, F):
     '''
     return (O + D + E + F) / 4.
 
- 
+
 def inertia_tensor(O, D, E, F, P):
     '''
     Inertia tensor of a tetrahedron with vertices (O, D, E, F) w.r.t an arbitrary point point P
@@ -90,13 +90,12 @@ def inertia_tensor_helper(O, D, E, F):
     '''
     Inertia tensor of a tetrahedron with vertices (O, D, E, F) w.r.t point O
     Reference: https://doi.org/10.1006/icar.1996.0243
-    Unfortunately, it looks like the order of the vertices does matter when using this method. 
+    Unfortunately, it looks like the orientation of the vertices does matter when using this method. 
     '''    
     DO = D - O
     EO = E - O
     FO = F - O
     vol = signed_tetrahedron_volume(O, D, E, F)
-    assert vol > 0, "Consider changing the order of vertices!"
     P = []
     for i in range(dim):
         P.append([])
@@ -107,19 +106,26 @@ def inertia_tensor_helper(O, D, E, F):
     I = [[ P[1][1] + P[2][2], -P[0][1],           -P[0][2]], 
          [-P[1][0],            P[0][0] + P[2][2], -P[1][2]], 
          [-P[2][0],           -P[2][1],            P[0][0] + P[1][1]]]
-    return vol / 20. * np.array(I)
+
+    # jax.jit has no runtime error mechanism, so return nan if the orientation of the tetrahedron is not applicable.
+    return np.where(vol > 0., vol / 20. * np.array(I), np.nan)
 
 
-
-#TODO: Unit test of these functions
+def d_to_line_seg(P, A, B):
+    '''
+    Distance of a point P to a line segment AB
+    '''
+    BA = B - A
+    PB = P - B
+    PA = P - A
+    tmp1 = np.where(np.dot(BA, PA) < 0., norm(PA), norm(np.cross(BA, PA)) / norm(BA))
+    return np.where(np.dot(BA, PB) > 0., norm(PB), tmp1)
 
 
 def d_to_triangle(P, P1, P2, P3):
     '''
     Distance of a point P to a triangle (P1, P2, P3)
-    References: 
-    https://math.stackexchange.com/questions/544946/determine-if-projection-of-3d-point-onto-plane-is-within-a-triangle
-    https://www.geogebra.org/m/ZuvmPjmy
+    Reference: https://math.stackexchange.com/questions/544946/determine-if-projection-of-3d-point-onto-plane-is-within-a-triangle
     '''
     u = P2 - P1
     v = P3 - P1
@@ -130,16 +136,18 @@ def d_to_triangle(P, P1, P2, P3):
     t = P - P3
 
     n_square = np.sum(n*n)
-    c1 = np.dot(np.cross(u, r), n) / n_square
+    c3 = np.dot(np.cross(u, r), n) / n_square
     c2 = np.dot(np.cross(r, v), n) / n_square
-    c3 = 1 - c1 - c2
+    c1 = 1 - c3 - c2
 
-    tmp5 = np.where(c3 < 0., norm(np.cross(r, u))/norm(u), norm(P - (c1*P1 + c2*P2 + c3*P3)))
-    tmp4 = np.where(c3 < 0., norm(r), norm(np.cross(r, v))/norm(v))
-    tmp3 = np.where(c2 < 0., tmp4, tmp5)
-    tmp2 = np.where(c3 < 0., norm(s), norm(np.cross(s, w))/norm(w))
-    tmp1 = np.where(c2 < 0., norm(t), tmp2)
-    return np.where(c1 < 0., tmp1, tmp3)
+    d1 = d_to_line_seg(P, P2, P3)
+    d2 = d_to_line_seg(P, P1, P3)
+    d3 = d_to_line_seg(P, P1, P2)
+    d = np.min(np.array([d1, d2, d3]))
+
+    tmp2 = np.where(c3 < 0., d, norm(P - (c1*P1 + c2*P2 + c3*P3)))
+    tmp1 = np.where(c2 < 0., d, tmp2)
+    return np.where(c1 < 0., d, tmp1)
 
 d_to_triangles = jax.jit(jax.vmap(d_to_triangle, in_axes=(None, 0, 0, 0), out_axes=0))
 
@@ -153,7 +161,9 @@ def sign_to_tetrahedron(P, O, D, E, F):
     FO = F - O
     ED = E - D
     FD = F - D
-    OD = O - D 
+    OD = O - D
+    PO = P - O 
+    PD = P - D
     tmp3 = np.where(np.dot(np.cross(ED, FD), OD)*np.dot(np.cross(ED, FD), PD) < 0., False, True)
     tmp2 = np.where(np.dot(np.cross(EO, FO), DO)*np.dot(np.cross(EO, FO), PO) < 0., False, tmp3)
     tmp1 = np.where(np.dot(np.cross(DO, FO), EO)*np.dot(np.cross(DO, FO), PO) < 0., False, tmp2)

@@ -15,7 +15,7 @@ from functools import partial
 import datetime
 import json
 from .data_generator import plot_Eiknoal_points
-from .general_utils import shuffle_data, profile, clean_folder, output_vtk
+from .general_utils import shuffle_data, profile, clean_folder, output_vtk_2d
 
 # jax.config.update('jax_platform_name', 'cpu')
 
@@ -224,8 +224,8 @@ def train():
 
         if epoch % 3 == 0:
             print(f"Epoch {epoch}: Per sample loss is {train_loss_per_sample}")
-            output_vtk(batch_forward, params, epoch, 0, args)
-            output_vtk(batch_forward, params, epoch, 1, args)
+            output_vtk_2d(batch_forward, params, epoch, 0, args)
+            output_vtk_2d(batch_forward, params, epoch, 1, args)
             np.save(os.path.join(args.dir, f'numpy/model/{now}/params_at_epoch_{epoch}.npy'), params)
 
     with open(os.path.join(args.dir, f'numpy/model/{now}/args.txt'), 'w') as f:
