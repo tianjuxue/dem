@@ -24,7 +24,7 @@ class TestTetrahedron(unittest.TestCase):
                         [-11996.20119,  194711.28938, -4417.66150],
                         [ 46343.16662, -4417.66150,    191168.76173]])
 
-        nptest.assert_array_almost_equal(tetrahedron_center(O, D, E, F), G, decimal=3)
+        nptest.assert_array_almost_equal(tetrahedron_centroid(O, D, E, F), G, decimal=3)
         nptest.assert_array_almost_equal(inertia_tensor(O, D, E, F, G), I_G, decimal=1)
  
     def test_regular_tetrahedron(self):
@@ -42,7 +42,7 @@ class TestTetrahedron(unittest.TestCase):
         vol = tetrahedron_volume(O, D, E, F)
         I_G = 1./20. * vol * s**2 * np.eye(dim)
 
-        nptest.assert_array_almost_equal(tetrahedron_center(O, D, E, F), G, decimal=5)
+        nptest.assert_array_almost_equal(tetrahedron_centroid(O, D, E, F), G, decimal=5)
         nptest.assert_array_almost_equal(inertia_tensor(O, D, E, F, G), I_G, decimal=5)
 
 
@@ -62,12 +62,19 @@ def tetrahedron_volume(O, D, E, F):
     ''' 
     return np.absolute(signed_tetrahedron_volume(O, D, E, F))
 
+tetrahedra_volumes = jax.jit(jax.vmap(tetrahedron_volume, in_axes=[None, 0, 0, 0], out_axes=0))
 
-def tetrahedron_center(O, D, E, F):
+
+
+def tetrahedron_centroid(O, D, E, F):
     '''
     Mass center of a tetrahedron with vertices (O, D, E, F) 
     '''
     return (O + D + E + F) / 4.
+
+
+tetrahedra_centroids = jax.jit(jax.vmap(tetrahedron_centroid, in_axes=[None, 0, 0, 0], out_axes=0))
+
 
 
 def inertia_tensor(O, D, E, F, P):
@@ -76,7 +83,7 @@ def inertia_tensor(O, D, E, F, P):
     Use parallel axis theorem (see "Tensor generalization" on Wikipeida page "Parallel axis theorem")
     '''
     vol = tetrahedron_volume(O, D, E, F)
-    center = tetrahedron_center(O, D, E, F)
+    center = tetrahedron_centroid(O, D, E, F)
     r_P = P - center
     r_O = O - center
     tmp_P = vol * (np.dot(r_P, r_P) * np.eye(dim) - np.outer(r_P, r_P))
@@ -84,6 +91,8 @@ def inertia_tensor(O, D, E, F, P):
     I_O = inertia_tensor_helper(O, D, E, F)
     I_P = I_O - tmp_O + tmp_P
     return I_P
+
+inertia_tensors = jax.jit(jax.vmap(inertia_tensor, in_axes=[None, 0, 0, 0, None], out_axes=0))
 
 
 def inertia_tensor_helper(O, D, E, F):

@@ -52,16 +52,17 @@ def eval_mass(params):
     polygon_centroid = np.sum((triangle_areas.reshape(-1, 1) * triagnle_centroids), axis=0) / polygon_area
     triangle_inertias = 1./6. * triangle_areas * (np.sum(seedsA * seedsA, axis=1) +  
         np.sum(seedsA * seedsB, axis=1) + np.sum(seedsB * seedsB, axis=1))
-    polygon_inertia = np.sum(triangle_inertias)
+    polygon_inertia_O = np.sum(triangle_inertias)
 
-    #TODO: Fix the bug of inertia calculation
+    #TODO: Check if this fixs the bug
+    polygon_inertia_G = polygon_inertia_O - np.sum(polygon_centroid**2)*polygon_area
 
-    return polygon_area, polygon_inertia, polygon_centroid
+    return polygon_area, polygon_inertia_G, polygon_centroid
 
 
 def reference_to_physical(x1, x2, theta, ref_centroid, ref_points):
     rot = get_rot_mat(theta)
-    points_wrt_centroid_initial = ref_points - ref_centroid.reshape(1, -1)
+    points_wrt_centroid_initial = (ref_points - ref_centroid.reshape(1, -1)).reshape(ref_points.shape)
     points_wrt_centroid = points_wrt_centroid_initial @ rot.T
     phy_centroid = np.array([x1, x2])
     phy_points = points_wrt_centroid + phy_centroid
