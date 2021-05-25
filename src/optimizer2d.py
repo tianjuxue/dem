@@ -9,9 +9,9 @@ import time
 from functools import partial
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
-from .polygon import args, get_phy_seeds, batch_get_phy_seeds, batch_eval_sdf, batch_grad_sdf, eval_mass, reference_to_physical
-from . import arguments
-from .simulator import solve_states, explicit_euler, jac_rhs_state, batch_jac_rhs_params, plot_animation
+from .arguments import args
+from .shape2d import get_phy_seeds, batch_get_phy_seeds, batch_eval_sdf, batch_grad_sdf, eval_mass, reference_to_physical
+from .dynamics2d import solve_states, explicit_euler, jac_rhs_state, batch_jac_rhs_params, plot_animation
 
 
 def objective(params, final_state):
@@ -22,7 +22,7 @@ grad_objective_state = jax.jit(jax.grad(objective, argnums=(1)))
 
 
 def regularization(params, initial_mass):
-    area, inertia, ref_centroid = eval_mass(params)
+    inertia, area, ref_centroid = eval_mass(params)
     reg_conserve_mass = (area - initial_mass)**2
     return np.sum(reg_conserve_mass)
 
@@ -131,7 +131,7 @@ def conserve_mass_binary_search(params, initial_mass):
     counter = 0
     while res > tol:
         counter += 1
-        mass, _, _ = eval_mass(params * factor)
+        _, mass, _ = eval_mass(params * factor)
         if mass > initial_mass:
             large = factor
         else:
@@ -148,7 +148,7 @@ def main():
     dt = 5*1e-4
     params = np.load('data/numpy/training/radius_samples.npy')[1]
     # params = np.ones(len(params))
-    initial_mass, _, _ = eval_mass(params)
+    _, initial_mass, _ = eval_mass(params)
 
     for opt_iter in range(100):
         print(f"\n###################################################################################")

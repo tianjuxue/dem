@@ -25,7 +25,7 @@ class TestTetrahedron(unittest.TestCase):
                         [ 46343.16662, -4417.66150,    191168.76173]])
 
         nptest.assert_array_almost_equal(tetrahedron_centroid(O, D, E, F), G, decimal=3)
-        nptest.assert_array_almost_equal(inertia_tensor(O, D, E, F, G), I_G, decimal=1)
+        nptest.assert_array_almost_equal(tetra_inertia_tensor(O, D, E, F, G), I_G, decimal=1)
  
     def test_regular_tetrahedron(self):
         '''
@@ -43,7 +43,7 @@ class TestTetrahedron(unittest.TestCase):
         I_G = 1./20. * vol * s**2 * np.eye(dim)
 
         nptest.assert_array_almost_equal(tetrahedron_centroid(O, D, E, F), G, decimal=5)
-        nptest.assert_array_almost_equal(inertia_tensor(O, D, E, F, G), I_G, decimal=5)
+        nptest.assert_array_almost_equal(tetra_inertia_tensor(O, D, E, F, G), I_G, decimal=5)
 
 
 def signed_tetrahedron_volume(O, D, E, F):
@@ -55,6 +55,8 @@ def signed_tetrahedron_volume(O, D, E, F):
     FD = F - D
     return np.dot(DO, np.cross(ED, FD)) / 6.
 
+signed_tetrahedra_volumes = jax.jit(jax.vmap(signed_tetrahedron_volume, in_axes=(None, 0, 0, 0), out_axes=0))
+
 
 def tetrahedron_volume(O, D, E, F):
     '''
@@ -62,7 +64,7 @@ def tetrahedron_volume(O, D, E, F):
     ''' 
     return np.absolute(signed_tetrahedron_volume(O, D, E, F))
 
-tetrahedra_volumes = jax.jit(jax.vmap(tetrahedron_volume, in_axes=[None, 0, 0, 0], out_axes=0))
+tetrahedra_volumes = jax.jit(jax.vmap(tetrahedron_volume, in_axes=(None, 0, 0, 0), out_axes=0))
 
 
 
@@ -73,11 +75,11 @@ def tetrahedron_centroid(O, D, E, F):
     return (O + D + E + F) / 4.
 
 
-tetrahedra_centroids = jax.jit(jax.vmap(tetrahedron_centroid, in_axes=[None, 0, 0, 0], out_axes=0))
+tetrahedra_centroids = jax.jit(jax.vmap(tetrahedron_centroid, in_axes=(None, 0, 0, 0), out_axes=0))
 
 
 
-def inertia_tensor(O, D, E, F, P):
+def tetra_inertia_tensor(O, D, E, F, P):
     '''
     Inertia tensor of a tetrahedron with vertices (O, D, E, F) w.r.t an arbitrary point point P
     Use parallel axis theorem (see "Tensor generalization" on Wikipeida page "Parallel axis theorem")
@@ -88,14 +90,14 @@ def inertia_tensor(O, D, E, F, P):
     r_O = O - center
     tmp_P = vol * (np.dot(r_P, r_P) * np.eye(dim) - np.outer(r_P, r_P))
     tmp_O = vol * (np.dot(r_O, r_O) * np.eye(dim) - np.outer(r_O, r_O))
-    I_O = inertia_tensor_helper(O, D, E, F)
+    I_O = tetra_inertia_tensor_helper(O, D, E, F)
     I_P = I_O - tmp_O + tmp_P
     return I_P
 
-inertia_tensors = jax.jit(jax.vmap(inertia_tensor, in_axes=[None, 0, 0, 0, None], out_axes=0))
+tetra_inertia_tensors = jax.jit(jax.vmap(tetra_inertia_tensor, in_axes=(None, 0, 0, 0, None), out_axes=0))
 
 
-def inertia_tensor_helper(O, D, E, F):
+def tetra_inertia_tensor_helper(O, D, E, F):
     '''
     Inertia tensor of a tetrahedron with vertices (O, D, E, F) w.r.t point O
     Reference: https://doi.org/10.1006/icar.1996.0243

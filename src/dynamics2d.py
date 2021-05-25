@@ -12,69 +12,14 @@ import shutil
 from functools import partial
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
-from .polygon import args, get_phy_seeds, batch_get_phy_seeds, batch_eval_sdf, batch_grad_sdf, eval_mass, reference_to_physical
-from .general_utils import show_contours
-from . import arguments
+from .arguments import args
+from .shape2d import get_phy_seeds, batch_get_phy_seeds, batch_eval_sdf, batch_grad_sdf, eval_mass, reference_to_physical
+from .dyn_comms import batch_wall_eval_sdf, batch_wall_grad_sdf, get_frictionless_force, runge_kutta_4
 
 
-#TODO: global variable
-gravity = 9.8
-
-
-def bottom_eval_sdf(point):
-    return point[1]
-
-bottom_grad_sdf = jax.grad(bottom_eval_sdf)
-batch_bottom_eval_sdf = jax.vmap(bottom_eval_sdf, in_axes=0, out_axes=0)
-batch_bottom_grad_sdf = jax.vmap(bottom_grad_sdf, in_axes=0, out_axes=0)
-
-
-def top_eval_sdf(point):
-    return 20. - point[1]
-
-top_grad_sdf = jax.grad(top_eval_sdf)
-batch_top_eval_sdf = jax.vmap(top_eval_sdf, in_axes=0, out_axes=0)
-batch_top_grad_sdf = jax.vmap(top_grad_sdf, in_axes=0, out_axes=0)
-
-
-def left_eval_sdf(point):
-    return point[0]
-
-left_grad_sdf = jax.grad(left_eval_sdf)
-batch_left_eval_sdf = jax.vmap(left_eval_sdf, in_axes=0, out_axes=0)
-batch_left_grad_sdf = jax.vmap(left_grad_sdf, in_axes=0, out_axes=0)
-
-
-def right_eval_sdf(point):
-    return 20. - point[0]
-
-right_grad_sdf = jax.grad(right_eval_sdf)
-batch_right_eval_sdf = jax.vmap(right_eval_sdf, in_axes=0, out_axes=0)
-batch_right_grad_sdf = jax.vmap(right_grad_sdf, in_axes=0, out_axes=0)
-
-
-def get_frictionless_force(phy_seeds, level_set_func, level_set_grad):
-    stiffness = 1e5
-    signed_distances = level_set_func(phy_seeds)
-    directions = level_set_grad(phy_seeds)
-    forces = stiffness * np.where(signed_distances < 0., -signed_distances, 0.).reshape(-1, 1) * directions   
-    return forces
-
-
-def explicit_euler(variable, rhs, dt):
-    return variable + dt * rhs(variable)
-
-
-def runge_kutta_4(variable, rhs, dt):
-    y_0 = variable
-    k_0 = rhs(y_0)
-    k_1 = rhs(y_0 + dt/2 * k_0)
-    k_2 = rhs(y_0 + dt/2 * k_1)
-    k_3 = rhs(y_0 + dt * k_2)
-    k = 1./6. * (k_0 + 2. * k_1 + 2. * k_2 + k_3)
-    y_1 = y_0 + dt * k
-    return y_1
-
+gravity = args.gravity
+box_size = 20.
+ 
 
 def get_reaction(phy_seeds, x1, x2, forces):
     toque_arms = phy_seeds - np.array([[x1, x2]])
@@ -123,15 +68,18 @@ batch_compute_mutual_reaction = jax.vmap(batch_compute_mutual_reaction_tmp, in_a
 
 def compute_wall_reaction(params, ref_centroid, x1, x2, theta):
     phy_seeds = get_phy_seeds(params, ref_centroid, x1, x2, theta)
-    forces_bottom = get_frictionless_force(phy_seeds, batch_bottom_eval_sdf, batch_bottom_grad_sdf)
-    reaction_bottom = get_reaction(phy_seeds, x1, x2, forces_bottom)
-    forces_top = get_frictionless_force(phy_seeds, batch_top_eval_sdf, batch_top_grad_sdf)
-    reaction_top = get_reaction(phy_seeds, x1, x2, forces_top)
-    forces_left = get_frictionless_force(phy_seeds, batch_left_eval_sdf, batch_left_grad_sdf)
+
+    forces_left = get_frictionless_force(phy_seeds, partial(batch_wall_eval_sdf, 0., True, 0), partial(batch_wall_grad_sdf, 0., True, 0))
     reaction_left = get_reaction(phy_seeds, x1, x2, forces_left)
-    forces_right = get_frictionless_force(phy_seeds, batch_right_eval_sdf, batch_right_grad_sdf)
+    forces_right = get_frictionless_force(phy_seeds, partial(batch_wall_eval_sdf, box_size, False, 0), partial(batch_wall_grad_sdf, box_size, False, 0))
     reaction_right = get_reaction(phy_seeds, x1, x2, forces_right)
-    return reaction_bottom + reaction_top + reaction_left + reaction_right
+
+    forces_bottom = get_frictionless_force(phy_seeds, partial(batch_wall_eval_sdf, 0., True, 1), partial(batch_wall_grad_sdf, 0., True, 1))
+    reaction_bottom = get_reaction(phy_seeds, x1, x2, forces_bottom)
+    forces_top = get_frictionless_force(phy_seeds, partial(batch_wall_eval_sdf, box_size, False, 1), partial(batch_wall_grad_sdf, box_size, False, 1))
+    reaction_top = get_reaction(phy_seeds, x1, x2, forces_top)
+
+    return reaction_left + reaction_right + reaction_bottom + reaction_top
 
 
 batch_compute_wall_reaction = jax.vmap(compute_wall_reaction, in_axes=(None, None, 0, 0, 0), out_axes=0)
@@ -149,9 +97,9 @@ def state_rhs_func(params, state):
     -------
     rhs: numpy array of shape (6, n_objects)
     '''
-    area, inertia, ref_centroid = eval_mass(params)
-    x1, x2, theta, v1, v2, omega = state
     n_objects = state.shape[1]
+    x1, x2, theta, v1, v2, omega = state
+    inertia, area, ref_centroid = eval_mass(params)
     paired_reactions = batch_compute_mutual_reaction(params, ref_centroid, x1, x2, theta, np.arange(n_objects), x1, x2, theta, np.arange(n_objects))
     mutual_reactions = np.sum(paired_reactions, axis=1)
     wall_reactions = batch_compute_wall_reaction(params, ref_centroid, x1, x2, theta)
@@ -177,10 +125,10 @@ def plot_seeds(seeds, fig_no):
 def plot_animation(seeds_collect, step=None):
     fig, ax = plt.subplots(figsize=(10, 10))
     xdata, ydata = [], []
-    plt.plot([0, 20], [0, 0], color='red', linewidth=1)
-    plt.plot([0, 20], [20, 20], color='red', linewidth=1)
-    plt.plot([0, 0], [0, 20], color='red', linewidth=1)
-    plt.plot([20, 20], [0, 20], color='red', linewidth=1)
+    plt.plot([0, box_size], [0, 0], color='red', linewidth=1)
+    plt.plot([0, box_size], [box_size, box_size], color='red', linewidth=1)
+    plt.plot([0, 0], [0, box_size], color='red', linewidth=1)
+    plt.plot([box_size, box_size], [0, box_size], color='red', linewidth=1)
 
     n_objects = len(seeds_collect[0])
 
@@ -204,14 +152,14 @@ def plot_animation(seeds_collect, step=None):
     anim = FuncAnimation(fig, update, frames=len(seeds_collect), init_func=init, blit=True)
 
     if step is None:
-        anim.save(f'data/mp4/test.mp4', fps=30, dpi=300)
+        anim.save(f'data/mp4/2d/test.mp4', fps=30, dpi=300)
     else:
         if step == 0:
-            files = glob.glob(f'data/mp4/opt/*')
+            files = glob.glob(f'data/mp4/2d/opt/*')
             for f in files:
                 os.remove(f)
-            # shutil.rmtree(f'data/mp4/opt/', ignore_errors=True)
-        anim.save(f'data/mp4/opt/test{step}.mp4', fps=30, dpi=300)
+            # shutil.rmtree(f'data/mp4/2d/opt/', ignore_errors=True)
+        anim.save(f'data/mp4/2d/opt/test{step}.mp4', fps=30, dpi=300)
 
     # plt.show()
 
@@ -279,7 +227,7 @@ def solve_states(params, num_steps, dt):
 def drop_a_stone_2d():
     start_time = time.time()
     params = np.load('data/numpy/training/radius_samples.npy')[1]
-    area, inertia, ref_centroid = eval_mass(params)
+    inertia, area, ref_centroid = eval_mass(params)
     state = initialize_state_1_object()
     num_steps = 1500
     dt = 5*1e-4
@@ -306,5 +254,3 @@ def drop_a_stone_2d():
 
 if __name__ == '__main__':
     drop_a_stone_2d()
-    # debug()
-    # plot_animation()

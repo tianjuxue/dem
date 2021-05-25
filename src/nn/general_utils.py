@@ -13,41 +13,6 @@ onp.random.seed(0)
 key = jax.random.PRNGKey(0)
 
 
-def d_to_line_seg(P, A, B):
-    '''Distance of a point P to a line segment AB'''
-    AB = B - A
-    BP = P - B
-    AP = P - A
-    AB_BP = np.dot(AB, BP)
-    AB_AP = np.dot(AB, AP)
-    mod = np.sqrt(np.sum(AB**2))
-    tmp2 = np.absolute(np.cross(AB, AP)) / mod
-    tmp1 = np.where(AB_AP < 0., np.sqrt(np.sum(AP**2)), tmp2)
-    return np.where(AB_BP > 0., np.sqrt(np.sum(BP**2)), tmp1)
-
-d_to_line_segs = jax.jit(jax.vmap(d_to_line_seg, in_axes=(None, 0, 0), out_axes=0))
-
-
-def sign_to_line_seg(P, O, A, B):
-    ''' If P is inside the triangle OAB, return True, otherwise return False.
-    '''
-    OA = A - O
-    OB = B - O
-    OP = P - O
-    AB = B - A
-    AP = P - A
-    OAxOB = np.cross(OA, OB)
-    OAxOP = np.cross(OA, OP)
-    OBxOP = np.cross(OB, OP)
-    OAxAB = np.cross(OA, AB)
-    ABxAP = np.cross(AB, AP)
-    tmp2 = np.where(ABxAP * OAxAB < 0., False, True)
-    tmp1 = np.where(OAxOB * OBxOP > 0., False, tmp2)
-    return  np.where(OAxOB * OAxOP < 0., False, tmp1)
-
-sign_to_line_segs = jax.jit(jax.vmap(sign_to_line_seg, in_axes=(None, None, 0, 0), out_axes=0))
-
-
 def shuffle_data(data, args):
     train_portion = 0.9
     n_samps = len(data)
@@ -137,39 +102,4 @@ def output_vtk_2D(batch_forward, params, step, sample_index, args):
     point_data = {'u': solution_flat}
     meshio.Mesh(points, cells, point_data=point_data).write(os.path.join(args.dir, f"vtk/2d/sample_index_{sample_index}/u{step}.vtk"))
 
-
-def output_vtk_3D_shape(points, connectivity, file_path):
-    cells = [("triangle", connectivity)]
-    mesh = meshio.Mesh(points, cells)
-    mesh.write(file_path)
-
-
-def output_vtk_3D_field(args, scalar_func, file_path):
-    refinement = 6
-    division = onp.power(2, refinement)
-    tmp = 3 * [onp.linspace(-args.domain_length, args.domain_length, division + 1)]
-    X_coo, Y_coo, Z_coo = onp.meshgrid(*tmp, indexing='ij')
-
-    cells = []
-    for i in range(division):
-        for j in range(division):
-            for k in range(division):
-                N = division + 1
-                cells.append([i * N**2 + j * N + k, 
-                             (i + 1) * N**2 + j * N + k, 
-                             (i + 1) * N**2 + (j + 1) * N + k, 
-                             i * N**2 + (j + 1) * N + k,
-                             i * N**2 + j * N + k + 1, 
-                             (i + 1) * N**2 + j * N + k + 1, 
-                             (i + 1) * N**2 + (j + 1) * N + k + 1, 
-                             i * N**2 + (j + 1) * N + k + 1])
-    cells = [('hexahedron', onp.array(cells))]
-    X_coo_flat = X_coo.flatten()
-    Y_coo_flat = Y_coo.flatten()
-    Z_coo_flat = Z_coo.flatten()
-
-    points = onp.stack((X_coo_flat, Y_coo_flat, Z_coo_flat), axis=1)
-    solutions = scalar_func(points)
-    point_data = {'u': solutions}
-    meshio.Mesh(points, cells, point_data=point_data).write(file_path)
 
