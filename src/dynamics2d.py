@@ -29,6 +29,25 @@ def get_reaction(phy_seeds, x1, x2, forces):
     return np.array([f1, f2, t]) 
 
 
+def compute_wall_reaction(params, ref_centroid, x1, x2, theta):
+    phy_seeds = get_phy_seeds(params, ref_centroid, x1, x2, theta)
+
+    forces_left = get_frictionless_force(phy_seeds, partial(batch_wall_eval_sdf, 0., True, 0), partial(batch_wall_grad_sdf, 0., True, 0))
+    reaction_left = get_reaction(phy_seeds, x1, x2, forces_left)
+    forces_right = get_frictionless_force(phy_seeds, partial(batch_wall_eval_sdf, box_size, False, 0), partial(batch_wall_grad_sdf, box_size, False, 0))
+    reaction_right = get_reaction(phy_seeds, x1, x2, forces_right)
+
+    forces_bottom = get_frictionless_force(phy_seeds, partial(batch_wall_eval_sdf, 0., True, 1), partial(batch_wall_grad_sdf, 0., True, 1))
+    reaction_bottom = get_reaction(phy_seeds, x1, x2, forces_bottom)
+    forces_top = get_frictionless_force(phy_seeds, partial(batch_wall_eval_sdf, box_size, False, 1), partial(batch_wall_grad_sdf, box_size, False, 1))
+    reaction_top = get_reaction(phy_seeds, x1, x2, forces_top)
+
+    return reaction_left + reaction_right + reaction_bottom + reaction_top
+
+
+batch_compute_wall_reaction = jax.vmap(compute_wall_reaction, in_axes=(None, None, 0, 0, 0), out_axes=0)
+
+
 def compute_mutual_reaction(params, ref_centroid, x1_o1, x2_o1, theta_o1, index1, x1_o2, x2_o2, theta_o2, index2):
     '''Force (f1, f2) and torque (t) by object 2 on object 1
     '''
@@ -64,25 +83,6 @@ def compute_mutual_reaction(params, ref_centroid, x1_o1, x2_o1, theta_o1, index1
 
 batch_compute_mutual_reaction_tmp = jax.vmap(compute_mutual_reaction, in_axes=(None, None, None, None, None, None, 0, 0, 0, 0), out_axes=0)
 batch_compute_mutual_reaction = jax.vmap(batch_compute_mutual_reaction_tmp, in_axes=(None, None, 0, 0, 0, 0, None, None, None, None), out_axes=0)
-
-
-def compute_wall_reaction(params, ref_centroid, x1, x2, theta):
-    phy_seeds = get_phy_seeds(params, ref_centroid, x1, x2, theta)
-
-    forces_left = get_frictionless_force(phy_seeds, partial(batch_wall_eval_sdf, 0., True, 0), partial(batch_wall_grad_sdf, 0., True, 0))
-    reaction_left = get_reaction(phy_seeds, x1, x2, forces_left)
-    forces_right = get_frictionless_force(phy_seeds, partial(batch_wall_eval_sdf, box_size, False, 0), partial(batch_wall_grad_sdf, box_size, False, 0))
-    reaction_right = get_reaction(phy_seeds, x1, x2, forces_right)
-
-    forces_bottom = get_frictionless_force(phy_seeds, partial(batch_wall_eval_sdf, 0., True, 1), partial(batch_wall_grad_sdf, 0., True, 1))
-    reaction_bottom = get_reaction(phy_seeds, x1, x2, forces_bottom)
-    forces_top = get_frictionless_force(phy_seeds, partial(batch_wall_eval_sdf, box_size, False, 1), partial(batch_wall_grad_sdf, box_size, False, 1))
-    reaction_top = get_reaction(phy_seeds, x1, x2, forces_top)
-
-    return reaction_left + reaction_right + reaction_bottom + reaction_top
-
-
-batch_compute_wall_reaction = jax.vmap(compute_wall_reaction, in_axes=(None, None, 0, 0, 0), out_axes=0)
 
 
 @jax.jit

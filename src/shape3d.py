@@ -125,7 +125,7 @@ class TestShape(unittest.TestCase):
         nptest.assert_array_almost_equal(b1, b2, decimal=4)      
 
 
-    def test_polyhedron_inertia_tensor(self):
+    def test_polyhedron_inertia_tensor_1(self):
         '''
         The inertia tensor should only depend on the orientation of the object.
         We compute the inertia tensor in two different frameworks and compare the results.
@@ -152,6 +152,27 @@ class TestShape(unittest.TestCase):
         nptest.assert_almost_equal(polyhedron_vol_1, polyhedron_vol_2, decimal=4)
         nptest.assert_array_almost_equal(polyhedron_intertia_1, polyhedron_intertia_2, decimal=4)
        
+
+    def test_polyhedron_inertia_tensor_2(self):
+        '''
+        The inertia tensor must follow the convection of tensor rotation, i.e., I' = R I R^-1, where R is the rotation tensor
+        '''
+        q1 = np.array([1., 0., 0., 0])
+        q2 = np.array([np.cos(np.pi/4), 0, 0, np.sin(np.pi/4)])
+        R = get_rot_mat(q2)
+
+        cube_func = lambda x: np.max(np.absolute(x), axis=-1) - 1.
+        object_3D = generate_template_object('sphere', 10)
+        object_3D.morph_into_shape(cube_func)
+        params = object_3D.params
+        directions = object_3D.get_directions()
+        connectivity = object_3D.get_connectivity()
+
+        polyhedron_intertia_before, _, _ = compute_inertia_tensor(params, directions, connectivity, q1)
+        polyhedron_intertia_after, _, _ = compute_inertia_tensor(params, directions, connectivity, q2) 
+
+        nptest.assert_array_almost_equal(polyhedron_intertia_after, R @ polyhedron_intertia_before @ R.T, decimal=6)
+
 
 def trapezoid_shape(offset=0.5):
     '''
@@ -310,7 +331,10 @@ def eval_sdf_helper(vertices_oriented, origin, point):
     Signed distance function of a point to a polyhedron defined vertices_oriented and origin
     '''
     sign = np.where(np.any(sign_to_tetrahedra(point, origin, *vertices_oriented)), -1., 1.)
+
     result = np.min(d_to_triangles(point, *vertices_oriented)) * sign
+    # result = sign
+
     return result
 
 batch_eval_sdf_helper = jax.jit(jax.vmap(eval_sdf_helper, in_axes=(None, None, 0), out_axes=0))
@@ -326,6 +350,9 @@ def get_rot_mat(q):
                      [2*q[1]*q[3] - 2*q[0]*q[2], 2*q[2]*q[3] + 2*q[0]*q[1], q[0]*q[0] - q[1]*q[1] - q[2]*q[2] + q[3]*q[3]]])
 
 
+get_rot_mats = jax.jit(jax.vmap(get_rot_mat, in_axes=0, out_axes=0))
+
+
 def quat_mul(q, p):
     '''
     Standard quaternion multiplication.
@@ -338,7 +365,7 @@ def quat_mul(q, p):
 quats_mul = jax.jit(jax.vmap(quat_mul, in_axes=(0, 0), out_axes=0))
 
 
-def rotate_wrt_point(q, points):
+def rotate_point(q, points):
     '''
     Rotate some input points according to the quaternion q
     '''
@@ -364,10 +391,14 @@ def reference_to_physical(x, q, ref_centroid, ref_points):
 
     '''
     points_wrt_centroid_initial = (ref_points - ref_centroid.reshape(1, -1)).reshape(ref_points.shape)
-    points_wrt_centroid = rotate_wrt_point(q, points_wrt_centroid_initial)
+    points_wrt_centroid = rotate_point(q, points_wrt_centroid_initial)
     phy_centroid = x
     phy_points = points_wrt_centroid + phy_centroid
     return phy_points
+
+
+batch_reference_to_physical = jax.jit(jax.vmap(reference_to_physical, in_axes=(0, 0, None, None), out_axes=0))
+
 
 
 #TODO: How to make seeds work reasonably well?
@@ -432,15 +463,13 @@ def compute_inertia_tensor(params, directions, connectivity, q):
     its rotational position q
     '''
     ref_vertices_oriented, ref_pointO = get_ref_vertices_oriented(params, directions, connectivity)
-    rotated_vertices_oriented = rotate_wrt_point(q, ref_vertices_oriented.reshape(dim*len(connectivity), dim)).reshape(dim, len(connectivity), dim)
+    rotated_vertices_oriented = rotate_point(q, ref_vertices_oriented.reshape(dim*len(connectivity), dim)).reshape(dim, len(connectivity), dim)
     polyhedron_vol, ref_centroid = compute_volume_and_ref_centroid(params, directions, connectivity)
-    rotated_centroid = rotate_wrt_point(q, ref_centroid)
+    rotated_centroid = rotate_point(q, ref_centroid)
     polyhedron_intertia = np.sum(tetra_inertia_tensors(ref_pointO, *rotated_vertices_oriented, rotated_centroid), axis=0)
     return polyhedron_intertia, polyhedron_vol, ref_centroid
 
-
 compute_inertia_tensors = jax.jit(jax.vmap(compute_inertia_tensor, in_axes=(None, None, None, 0), out_axes=(0, None, None)))
-
 
 
 def compute_volume_and_ref_centroid(params, directions, connectivity):
