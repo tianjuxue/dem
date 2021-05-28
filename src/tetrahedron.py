@@ -1,7 +1,7 @@
 import numpy as onp
 import jax
 import jax.numpy as np
-from jax.numpy.linalg import norm
+# from jax.numpy.linalg import norm
 import unittest
 import numpy.testing as nptest
 from .arguments import args
@@ -44,6 +44,13 @@ class TestTetrahedron(unittest.TestCase):
 
         nptest.assert_array_almost_equal(tetrahedron_centroid(O, D, E, F), G, decimal=5)
         nptest.assert_array_almost_equal(tetra_inertia_tensor(O, D, E, F, G), I_G, decimal=5)
+
+
+def norm(x):
+  x = np.sum(x**2)
+  safe_x = np.where(x > 0., x, 0.)
+  return np.sqrt(safe_x)
+
 
 
 def signed_tetrahedron_volume(O, D, E, F):
@@ -160,7 +167,7 @@ def d_to_triangle(P, P1, P2, P3):
     tmp1 = np.where(c2 < 0., d, tmp2)
     return np.where(c1 < 0., d, tmp1)
 
-d_to_triangles = jax.jit(jax.vmap(d_to_triangle, in_axes=(None, 0, 0, 0), out_axes=0))
+d_to_triangles = jax.vmap(d_to_triangle, in_axes=(None, 0, 0, 0), out_axes=0)
 
 
 def sign_to_tetrahedron(P, O, D, E, F):
@@ -180,7 +187,7 @@ def sign_to_tetrahedron(P, O, D, E, F):
     tmp1 = np.where(np.dot(np.cross(DO, FO), EO)*np.dot(np.cross(DO, FO), PO) < 0., False, tmp2)
     return np.where(np.dot(np.cross(DO, EO), FO)*np.dot(np.cross(DO, EO), PO) < 0., False, tmp1)
 
-sign_to_tetrahedra = jax.jit(jax.vmap(sign_to_tetrahedron, in_axes=(None, None, 0, 0, 0), out_axes=0))
+sign_to_tetrahedra = jax.vmap(sign_to_tetrahedron, in_axes=(None, None, 0, 0, 0), out_axes=0)
 
 
 if __name__ == '__main__':

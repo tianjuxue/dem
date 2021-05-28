@@ -44,6 +44,12 @@ class TestShape(unittest.TestCase):
         vertices_oriented = np.take(vertices, connectivity.T, axis=0)
         origin = np.array([0., 0., 0.])
         scalar_func = partial(batch_eval_sdf_helper, vertices_oriented, origin)
+
+        key = jax.random.PRNGKey(0)
+        test_points = jax.random.uniform(key, shape=(1000, dim), minval=-3., maxval=3.)
+        grads = batch_grad_sdf_helper(vertices_oriented, origin, test_points)
+        grad = grad_sdf_helper(vertices_oriented, origin, origin)
+ 
         output_vtk_3D_field(args, scalar_func, f"data/vtk/3d/test/sdf_reg_tetra.vtk")
         output_vtk_3D_shape(vertices, connectivity, f"data/vtk/3d/test/shape_reg_tetra.vtk")
 
@@ -72,7 +78,7 @@ class TestShape(unittest.TestCase):
 
         cube_func = lambda x: np.max(np.absolute(x), axis=-1) - 1.
         key = jax.random.PRNGKey(0)
-        test_points = jax.random.uniform(key, shape=(1000, args.dim), minval=-1., maxval=1.)
+        test_points = jax.random.uniform(key, shape=(1000, dim), minval=-1., maxval=1.)
         test_values = scalar_func(test_points)
         true_values = cube_func(test_points)
         nptest.assert_array_almost_equal(test_values, true_values, decimal=5)
@@ -337,7 +343,10 @@ def eval_sdf_helper(vertices_oriented, origin, point):
 
     return result
 
-batch_eval_sdf_helper = jax.jit(jax.vmap(eval_sdf_helper, in_axes=(None, None, 0), out_axes=0))
+batch_eval_sdf_helper = jax.vmap(eval_sdf_helper, in_axes=(None, None, 0), out_axes=0)
+
+grad_sdf_helper = jax.grad(eval_sdf_helper, argnums=(-1))
+batch_grad_sdf_helper = jax.vmap(grad_sdf_helper, in_axes=(None, None, 0), out_axes=0)
 
 
 def get_rot_mat(q):
@@ -489,4 +498,3 @@ def compute_volume_and_ref_centroid(params, directions, connectivity):
 
 if __name__ == '__main__':
     unittest.main()
-
