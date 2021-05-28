@@ -84,7 +84,7 @@ def compute_mutual_reaction_sdf(params, directions, connectivity, ref_centroid, 
 
     return jax.lax.cond(index1 < index2, f2, f3, None)
 
-batch_compute_mutual_reaction_sdf = jax.jit(jax.vmap(compute_mutual_reaction_sdf, in_axes=(None,)*7 + (0,)*2, out_axes=(0,)))
+batch_compute_mutual_reaction_sdf = jax.jit(jax.vmap(compute_mutual_reaction_sdf, in_axes=(None,)*7 + (0,)*2, out_axes=0))
 
 
 
