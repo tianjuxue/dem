@@ -18,75 +18,20 @@ from memory_profiler import profile
 
 dim = args.dim
 gravity = args.gravity
-box_size = 20.
+box_size = args.box_size
+
+# no_filter_double_vmap: no distance check, use double vmap (fastest for small number of objects, but for 125 objects, running on GPU asks for too much memoery)
+# no_filter_lax: no distance check, use lax.map for outer loop, and vmap for inner loop (for 125 objects, very slow)
+# filter_vmap: with distance check, use vmap for the collision pairs (relatively fast, but triggering recompiles when batch size changes)
+# filter_lax-map: with distance check, use lax.map for the collision pairs (when collision pairs is empty, it is still slow, why?)
+# filter_python-map: with distance check, use python map for collision pairs
+running_modes = ['no_filter_double_vmap', 'no_filter_lax-map_vmap', 'filter_vmap', 'filter_lax-map', 'filter_python-map']
+
+running_mode =  running_modes[2]
 
 
-@jax.jit
-def get_reaction(phy_seeds, x, forces):
-    toque_arms = phy_seeds - x.reshape(1, -1)
-    torques = np.cross(toque_arms, forces)
-    f = np.sum(forces, axis=0)
-    t = np.sum(torques, axis=0)
-    return np.concatenate([f, t])
-
-
-def compute_wall_reaction(params, directions, connectivity, ref_centroid, x, q, phy_seeds):
-    # phy_seeds = get_phy_seeds(params, directions, connectivity, ref_centroid, x, q)
-
-    forces_left = get_frictionless_force(phy_seeds, partial(batch_wall_eval_sdf, 0., True, 0), partial(batch_wall_grad_sdf, 0., True, 0))
-    reaction_left = get_reaction(phy_seeds, x, forces_left)
-    forces_right = get_frictionless_force(phy_seeds, partial(batch_wall_eval_sdf, box_size, False, 0), partial(batch_wall_grad_sdf, box_size, False, 0))
-    reaction_right = get_reaction(phy_seeds, x, forces_right)
-
-    forces_front = get_frictionless_force(phy_seeds, partial(batch_wall_eval_sdf, 0., True, 1), partial(batch_wall_grad_sdf, 0., True, 1))
-    reaction_front = get_reaction(phy_seeds, x, forces_front)
-    forces_back = get_frictionless_force(phy_seeds, partial(batch_wall_eval_sdf, box_size, False, 1), partial(batch_wall_grad_sdf, box_size, False, 1))
-    reaction_back = get_reaction(phy_seeds, x, forces_back)
-
-    forces_bottom = get_frictionless_force(phy_seeds, partial(batch_wall_eval_sdf, 0., True, 2), partial(batch_wall_grad_sdf, 0., True, 2))
-    reaction_bottom = get_reaction(phy_seeds, x, forces_bottom)
-    forces_top = get_frictionless_force(phy_seeds, partial(batch_wall_eval_sdf, box_size, False, 2), partial(batch_wall_grad_sdf, box_size, False, 2))
-    reaction_top = get_reaction(phy_seeds, x, forces_top)
-
-    return reaction_left + reaction_right + reaction_front + reaction_back + reaction_bottom + reaction_top
-
-
-batch_compute_wall_reaction = jax.jit(jax.vmap(compute_wall_reaction, in_axes=(None, None, None, None, 0, 0, 0), out_axes=0))
-
-
-def compute_mutual_reaction_sdf(params, directions, connectivity, ref_centroid, x, q, batch_phy_seeds, index1, index2):
-    '''Force (f1, f2) and torque (t) by object 2 on object 1
-    '''
-    x_o1 = x[index1]
-    x_o2 = x[index2]    
-    q_o1 = q[index1]
-    q_o2 = q[index2] 
-    phy_seeds_o1 = batch_phy_seeds[index1]
-    phy_seeds_o2 = batch_phy_seeds[index2]
-
-    def f3(_):
-        # object 2 is master (use seeds of object 2), object 1 is slave
-        # phy_seeds_o2 = get_phy_seeds(params, directions, connectivity, ref_centroid, x_o2, q_o2)
-        level_set_func = partial(batch_eval_sdf, params, directions, connectivity, ref_centroid, x_o1, q_o1)
-        level_set_grad = partial(batch_grad_sdf, params, directions, connectivity, ref_centroid, x_o1, q_o1)
-        forces = -get_frictionless_force(phy_seeds_o2, level_set_func, level_set_grad)
-        reaction = get_reaction(phy_seeds_o2, x_o1, forces)
-        return reaction
-
-    def f2(_):
-        # object 1 is master (use seeds of object 1), object 2 is slave
-        # phy_seeds_o1 = get_phy_seeds(params, directions, connectivity, ref_centroid, x_o1, q_o1)
-        level_set_func = partial(batch_eval_sdf, params, directions, connectivity, ref_centroid, x_o2, q_o2)
-        level_set_grad = partial(batch_grad_sdf, params, directions, connectivity, ref_centroid, x_o2, q_o2)
-        forces = get_frictionless_force(phy_seeds_o1, level_set_func, level_set_grad)
-        reaction = get_reaction(phy_seeds_o1, x_o1, forces)
-        return reaction
-
-    return jax.lax.cond(index1 < index2, f2, f3, None)
-
-batch_compute_mutual_reaction_sdf = jax.jit(jax.vmap(compute_mutual_reaction_sdf, in_axes=(None,)*7 + (0,)*2, out_axes=0))
-
-
+##########################################################################################
+# Alternative ways to compute mutual reactions without using SDFs
 
 def compute_mutual_reaction_vertices(params, directions, connectivity, ref_vertice_normals, ref_centroid, x, q, batch_phy_seeds, index1, index2):
     '''Force (f1, f2) and torque (t) by object 2 on object 1
@@ -130,7 +75,6 @@ def compute_mutual_reaction_vertices(params, directions, connectivity, ref_verti
 batch_compute_mutual_reaction_vertices = jax.jit(jax.vmap(compute_mutual_reaction_vertices, in_axes=(None,)*8 + (0,)*2, out_axes=0))
 
 
-
 def compute_normals(params, directions, connectivity):
     ref_vertices_oriented, _ = get_ref_vertices_oriented(params, directions, connectivity)
     ED = ref_vertices_oriented[1] - ref_vertices_oriented[0]
@@ -158,6 +102,78 @@ def groupby_sum(indices, data, size_to):
     one_hot = get_one_hot(indices, size_to)
     return one_hot.T @ data
 
+# reactions = batch_compute_mutual_reaction_vertices(params, directions, connectivity, ref_vertice_normals, 
+#     ref_centroid, x.T, q.T, batch_phy_seeds, collision_indices[:, 0], collision_indices[:, 1])
+
+##########################################################################################
+
+
+@jax.jit
+def get_reaction(phy_seeds, x, forces):
+    toque_arms = phy_seeds - x.reshape(1, -1)
+    torques = np.cross(toque_arms, forces)
+    f = np.sum(forces, axis=0)
+    t = np.sum(torques, axis=0)
+    return np.concatenate([f, t])
+
+
+def compute_wall_reaction(params, directions, connectivity, ref_centroid, x, q, phy_seeds):
+    forces_left = get_frictionless_force(phy_seeds, partial(batch_wall_eval_sdf, 0., True, 0), partial(batch_wall_grad_sdf, 0., True, 0))
+    reaction_left = get_reaction(phy_seeds, x, forces_left)
+    forces_right = get_frictionless_force(phy_seeds, partial(batch_wall_eval_sdf, box_size, False, 0), partial(batch_wall_grad_sdf, box_size, False, 0))
+    reaction_right = get_reaction(phy_seeds, x, forces_right)
+
+    forces_front = get_frictionless_force(phy_seeds, partial(batch_wall_eval_sdf, 0., True, 1), partial(batch_wall_grad_sdf, 0., True, 1))
+    reaction_front = get_reaction(phy_seeds, x, forces_front)
+    forces_back = get_frictionless_force(phy_seeds, partial(batch_wall_eval_sdf, box_size, False, 1), partial(batch_wall_grad_sdf, box_size, False, 1))
+    reaction_back = get_reaction(phy_seeds, x, forces_back)
+
+    forces_bottom = get_frictionless_force(phy_seeds, partial(batch_wall_eval_sdf, 0., True, 2), partial(batch_wall_grad_sdf, 0., True, 2))
+    reaction_bottom = get_reaction(phy_seeds, x, forces_bottom)
+    forces_top = get_frictionless_force(phy_seeds, partial(batch_wall_eval_sdf, box_size, False, 2), partial(batch_wall_grad_sdf, box_size, False, 2))
+    reaction_top = get_reaction(phy_seeds, x, forces_top)
+
+    return reaction_left + reaction_right + reaction_front + reaction_back + reaction_bottom + reaction_top
+
+
+batch_compute_wall_reaction = jax.jit(jax.vmap(compute_wall_reaction, in_axes=(None, None, None, None, 0, 0, 0), out_axes=0))
+
+
+@jax.jit
+def compute_mutual_reaction_sdf(params, directions, connectivity, ref_centroid, x, q, batch_phy_seeds, index1, index2):
+    '''Force (f1, f2) and torque (t) by object 2 on object 1
+    '''
+    x_o1 = x[index1]
+    x_o2 = x[index2]    
+    q_o1 = q[index1]
+    q_o2 = q[index2] 
+    phy_seeds_o1 = batch_phy_seeds[index1]
+    phy_seeds_o2 = batch_phy_seeds[index2]
+
+    def f3(_):
+        # object 2 is master (use seeds of object 2), object 1 is slave
+        level_set_func = partial(batch_eval_sdf, params, directions, connectivity, ref_centroid, x_o1, q_o1)
+        level_set_grad = partial(batch_grad_sdf, params, directions, connectivity, ref_centroid, x_o1, q_o1)
+        forces = -get_frictionless_force(phy_seeds_o2, level_set_func, level_set_grad)
+        reaction = get_reaction(phy_seeds_o2, x_o1, forces)
+        return reaction
+
+    def f2(_):
+        # object 1 is master (use seeds of object 1), object 2 is slave
+        level_set_func = partial(batch_eval_sdf, params, directions, connectivity, ref_centroid, x_o2, q_o2)
+        level_set_grad = partial(batch_grad_sdf, params, directions, connectivity, ref_centroid, x_o2, q_o2)
+        forces = get_frictionless_force(phy_seeds_o1, level_set_func, level_set_grad)
+        reaction = get_reaction(phy_seeds_o1, x_o1, forces)
+        return reaction
+
+    return jax.lax.cond(index1 < index2, f2, f3, None)
+
+batch_compute_mutual_reaction_sdf = jax.jit(jax.vmap(compute_mutual_reaction_sdf, in_axes=(None,)*7 + (0,)*2, out_axes=0))
+
+batch_compute_mutual_reaction_sdf_index2 = jax.jit(jax.vmap(compute_mutual_reaction_sdf, in_axes=(None,)*8 + (0,)*1, out_axes=0))
+
+batch_compute_mutual_reaction_sdf_index_1 = jax.jit(jax.vmap(batch_compute_mutual_reaction_sdf_index2, in_axes=(None,)*7 + (0, None), out_axes=0))
+
 
 def add_to_target(index, target_index, reaction, target):
     return jax.ops.index_add(target, target_index, reaction)
@@ -177,7 +193,7 @@ def state_rhs_func(params, directions, connectivity, state):
     params: numpy array of shape (n_params,)
     directions: numpy array with shape (num_vertices, dim)
     connectivity: numpy array with shape (num_cells, dim)
-    state: numpy array of shape (6, n_objects)
+    state: numpy array of shape (13, n_objects)
 
     Returns
     -------
@@ -192,37 +208,55 @@ def state_rhs_func(params, directions, connectivity, state):
     w = state[10:13]
     polyhedra_intertias, polyhedron_vol, ref_centroid = compute_inertia_tensors(params, directions, connectivity, q.T)
     I_inv = np.linalg.inv(polyhedra_intertias) 
-
-    # Check if two objects are far apart. If so, avoid computing mutual reactions.
-    max_radius = np.max(params)
-    phy_origins = batch_reference_to_physical(x.T, q.T, ref_centroid, np.array([0., 0., 0.]))
-    mutual_distances = get_mutual_distances(phy_origins, phy_origins)
-    collision_indices = np.array(np.where(mutual_distances < 2 * max_radius)).T
-    collision_indices = collision_indices[np.where(collision_indices[:, 0] != collision_indices[:, 1])]
-
     ref_seeds = get_ref_seeds(params, directions, connectivity)
     batch_phy_seeds = batch_reference_to_physical(x.T, q.T, ref_centroid, ref_seeds)
 
-    # compute_mutual_reaction(params, directions, connectivity, ref_vertice_normals, 
-    #     ref_centroid, x.T, q.T, batch_phy_seeds, 0, 1)
-    # exit()
-
     break1 = time.time()
 
-    reactions = batch_compute_mutual_reaction_sdf(params, directions, connectivity, 
-        ref_centroid, x.T, q.T, batch_phy_seeds, collision_indices[:, 0], collision_indices[:, 1])
+    if not running_mode.startswith('filter'):
+        # Do not check if two objects are far apart.
+        if running_mode == 'no_filter_double_vmap': 
+            paired_reactions = batch_compute_mutual_reaction_sdf_index_1(params, directions, connectivity, ref_centroid, 
+                        x.T, q.T, batch_phy_seeds, np.arange(n_objects), np.arange(n_objects))
 
-    # reactions = batch_compute_mutual_reaction_vertices(params, directions, connectivity, ref_vertice_normals, 
-    #     ref_centroid, x.T, q.T, batch_phy_seeds, collision_indices[:, 0], collision_indices[:, 1])
+        if running_mode == 'no_filter_lax-map_vmap':
+            def body_func(index):
+                return batch_compute_mutual_reaction_sdf_index2(params, directions, connectivity, ref_centroid, 
+                    x.T, q.T, batch_phy_seeds, index, np.arange(n_objects))
+            paired_reactions = jax.lax.map(body_func, np.arange(n_objects))
+
+        mutual_reactions = np.sum(paired_reactions, axis=1)
+
+    if running_mode.startswith('filter'):
+        # Check if two objects are far apart. If so, avoid computing mutual reactions.
+        max_radius = np.max(params)
+        phy_origins = batch_reference_to_physical(x.T, q.T, ref_centroid, np.array([0., 0., 0.]))
+        mutual_distances = get_mutual_distances(phy_origins, phy_origins)
+        collision_indices = np.array(np.where(mutual_distances < 2 * max_radius)).T
+        collision_indices = collision_indices[np.where(collision_indices[:, 0] != collision_indices[:, 1])]
+
+        def body_func(index_pair):
+            return compute_mutual_reaction_sdf(params, directions, connectivity, ref_centroid, x.T, q.T, batch_phy_seeds, index_pair[0], index_pair[1])
+
+        # if len(collision_indices) > 1:
+        #     reactions = jax.lax.map(body_func, collision_indices)
+        # else:
+        #     reactions = np.array(list(map(body_func, collision_indices)))
+
+        if running_mode == 'filter_vmap':
+            reactions = batch_compute_mutual_reaction_sdf(params, directions, connectivity, 
+                ref_centroid, x.T, q.T, batch_phy_seeds, collision_indices[:, 0], collision_indices[:, 1])
+
+        if running_mode == 'filter_lax-map':
+            reactions = jax.lax.map(body_func, collision_indices)
+
+        if running_mode == 'filter_python-map':
+            reactions = np.array(list(map(body_func, collision_indices)))
+ 
+        mutual_reactions = np.zeros((n_objects, 6))
+        mutual_reactions = np.sum(reduce_at(np.arange(len(collision_indices)), collision_indices[:, 0], reactions, mutual_reactions), axis=0)
 
     break2 = time.time()
- 
-    mutual_reactions = np.zeros((n_objects, 6))
-    mutual_reactions = np.sum(reduce_at(np.arange(len(collision_indices)), collision_indices[:, 0], reactions, mutual_reactions), axis=0)
-
-    # if len(collision_indices) > 0:
-    #     print(f"Dealing with contacts...")
-        # print(mutual_reactions)
 
     wall_reactions = batch_compute_wall_reaction(params, directions, connectivity, ref_centroid, x.T, q.T, batch_phy_seeds)
     contact_reactions = mutual_reactions + wall_reactions
@@ -244,12 +278,7 @@ def state_rhs_func(params, directions, connectivity, state):
 
     time_elapesed = break2 - break1 
     if time_elapesed > 1:
-        print(f"------------------------------------------------------------------Recompile took {time_elapesed}s")
-        print(collision_indices)
-
-    if np.any(np.isnan(rhs)):
-        print("rhs nan")
-        # print(rhs)
+        print(f"---------------------------------------compute mutual reactions took {time_elapesed}s")
         print(collision_indices)
 
     return rhs
