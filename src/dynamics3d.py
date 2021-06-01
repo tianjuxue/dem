@@ -10,11 +10,14 @@ from functools import partial
 from scipy.spatial.transform import Rotation as R
 from .arguments import args
 from .shape3d import get_phy_seeds, compute_inertia_tensor, compute_inertia_tensors, quats_mul, generate_template_object, reference_to_physical, \
-batch_eval_sdf, batch_grad_sdf, get_rot_mats, batch_reference_to_physical, quat_mul, get_ref_vertices_oriented, rotate_point, get_ref_seeds
+batch_eval_sdf, batch_grad_sdf, get_rot_mats, batch_reference_to_physical, quat_mul, get_ref_vertices_oriented, rotate_point, get_ref_seeds, \
+batch_eval_sdf_helper, batch_grad_sdf_helper
 from .io import output_vtk_3D_shape
 from .dyn_comms import batch_wall_eval_sdf, batch_wall_grad_sdf, get_frictionless_force, runge_kutta_4
-from memory_profiler import profile
+import gc
 
+# from jax.config import config
+# config.update("jax_debug_nans", True)
 
 dim = args.dim
 gravity = args.gravity
@@ -25,7 +28,8 @@ box_size = args.box_size
 # filter_vmap: with distance check, use vmap for the collision pairs (relatively fast, but triggering recompiles when batch size changes)
 # filter_lax-map: with distance check, use lax.map for the collision pairs (when collision pairs is empty, it is still slow, why?)
 # filter_python-map: with distance check, use python map for collision pairs
-running_modes = ['no_filter_double_vmap', 'no_filter_lax-map_vmap', 'filter_vmap', 'filter_lax-map', 'filter_python-map']
+# filter_alterntative: with distance check, use an alternative method that does not rely on SDF. Energy not conserved...
+running_modes = ['no_filter_double_vmap', 'no_filter_lax-map_vmap', 'filter_vmap', 'filter_lax-map', 'filter_python-map', 'filter_alternative']
 
 running_mode =  running_modes[2]
 
@@ -48,26 +52,25 @@ def compute_mutual_reaction_vertices(params, directions, connectivity, ref_verti
         # object 2 is master (use seeds of object 2), object 1 is slave
         phy_vertices_normals_o2 = rotate_point(q_o2, ref_vertice_normals)
         vertices_distances = get_mutual_distances(phy_seeds_o2, phy_seeds_o1)
-        inds = np.unravel_index(vertices_distances.argmin(), vertices_distances.shape)
-        phy_seed_o2 = np.take(phy_seeds_o2, inds[0], axis=0)
-        phy_seed_o1 = np.take(phy_seeds_o1, inds[1], axis=0)
-        phy_vertices_normal_o2 = np.take(phy_vertices_normals_o2, inds[0], axis=0)
-        d = np.dot(phy_vertices_normal_o2, (phy_seed_o2 - phy_seed_o1))
-        forces = stiffness * np.where(d > 0, d, 0.) * phy_vertices_normal_o2.reshape(1, -1)
-        reaction = get_reaction(phy_seed_o2.reshape(1, -1), x_o1, forces)
+        inds = np.argmin(vertices_distances, axis=0)
+        closest_phy_seed_o2 = np.take(phy_seeds_o2, inds, axis=0)
+        phy_vertices_normal_o2 = np.take(phy_vertices_normals_o2, inds, axis=0)
+        d = np.sum(phy_vertices_normal_o2 * (closest_phy_seed_o2 - phy_seeds_o1), axis=1)
+        forces = stiffness * np.where(d > 0, d, 0.).reshape(-1, 1) * phy_vertices_normal_o2
+        reaction = get_reaction(closest_phy_seed_o2, x_o1, forces)
         return reaction
 
     def f2(_):
         # object 1 is master (use seeds of object 1), object 2 is slave
         phy_vertices_normals_o1 = rotate_point(q_o1, ref_vertice_normals)
         vertices_distances = get_mutual_distances(phy_seeds_o1, phy_seeds_o2)
-        inds = np.unravel_index(vertices_distances.argmin(), vertices_distances.shape)
-        phy_seed_o1 = np.take(phy_seeds_o1, inds[0], axis=0)
-        phy_seed_o2 = np.take(phy_seeds_o2, inds[1], axis=0)
-        phy_vertices_normal_o1 = np.take(phy_vertices_normals_o1, inds[0], axis=0)
-        d = np.dot(phy_vertices_normal_o1, (phy_seed_o1 - phy_seed_o2))
-        forces = -stiffness * np.where(d > 0, d, 0.) * phy_vertices_normal_o1.reshape(1, -1)
-        reaction = get_reaction(phy_seed_o1.reshape(1, -1), x_o1, forces)
+        inds = np.argmin(vertices_distances, axis=0)
+        closest_phy_seed_o1 = np.take(phy_seeds_o1, inds, axis=0)
+        phy_vertices_normal_o1 = np.take(phy_vertices_normals_o1, inds, axis=0)
+        tmp = phy_vertices_normal_o1 * (closest_phy_seed_o1 - phy_seeds_o2)
+        d = np.sum(phy_vertices_normal_o1 * (closest_phy_seed_o1 - phy_seeds_o2), axis=1)
+        forces = -stiffness * np.where(d > 0, d, 0.).reshape(-1, 1) * phy_vertices_normal_o1
+        reaction = get_reaction(closest_phy_seed_o1, x_o1, forces)
         return reaction
 
     return jax.lax.cond(index1 < index2, f2, f3, None)
@@ -101,9 +104,6 @@ def groupby_mean(indices, data, size_to):
 def groupby_sum(indices, data, size_to):
     one_hot = get_one_hot(indices, size_to)
     return one_hot.T @ data
-
-# reactions = batch_compute_mutual_reaction_vertices(params, directions, connectivity, ref_vertice_normals, 
-#     ref_centroid, x.T, q.T, batch_phy_seeds, collision_indices[:, 0], collision_indices[:, 1])
 
 ##########################################################################################
 
@@ -199,8 +199,6 @@ def state_rhs_func(params, directions, connectivity, state):
     -------
     rhs: numpy array of shape (13, n_objects)
     '''
-
-    ref_vertice_normals = compute_normals(params, directions, connectivity)
     n_objects = state.shape[1]
     x = state[0:3]
     q = state[3:7]
@@ -213,7 +211,7 @@ def state_rhs_func(params, directions, connectivity, state):
 
     break1 = time.time()
 
-    if not running_mode.startswith('filter'):
+    if running_mode.startswith('no_filter'):
         # Do not check if two objects are far apart.
         if running_mode == 'no_filter_double_vmap': 
             paired_reactions = batch_compute_mutual_reaction_sdf_index_1(params, directions, connectivity, ref_centroid, 
@@ -253,8 +251,16 @@ def state_rhs_func(params, directions, connectivity, state):
         if running_mode == 'filter_python-map':
             reactions = np.array(list(map(body_func, collision_indices)))
  
+        if running_mode == 'filter_alternative':
+            ref_vertice_normals = compute_normals(params, directions, connectivity)
+            reactions = batch_compute_mutual_reaction_vertices(params, directions, connectivity, ref_vertice_normals, 
+                ref_centroid, x.T, q.T, batch_phy_seeds, collision_indices[:, 0], collision_indices[:, 1])
+
         mutual_reactions = np.zeros((n_objects, 6))
         mutual_reactions = np.sum(reduce_at(np.arange(len(collision_indices)), collision_indices[:, 0], reactions, mutual_reactions), axis=0)
+
+        # if len(collision_indices) > 1:
+        #     print("Collision may happen...")
 
     break2 = time.time()
 
@@ -279,7 +285,8 @@ def state_rhs_func(params, directions, connectivity, state):
     time_elapesed = break2 - break1 
     if time_elapesed > 1:
         print(f"---------------------------------------compute mutual reactions took {time_elapesed}s")
-        print(collision_indices)
+        # print(f"# of collision pairs = {len(collision_indices)}")
+        # print(collision_indices)
 
     return rhs
 
@@ -396,6 +403,7 @@ def drop_a_stone_3d():
     start_time = time.time()
 
     object_name = 'sphere'
+    # object_name = 'trapezoid'
 
     cube_func = lambda x: np.max(np.absolute(x), axis=-1) - 1.
 
@@ -413,7 +421,7 @@ def drop_a_stone_3d():
     state = initialize_state_3_objects()
     polyhedra_intertias_no_rotation, polyhedron_vol, ref_centroid = compute_inertia_tensors(params, directions, connectivity, state[3:7].T)
 
-    num_steps = 10000
+    num_steps = 3000
     dt = 5*1e-4
     states = [state]
     energy = []

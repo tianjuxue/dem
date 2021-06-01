@@ -184,7 +184,7 @@ def trapezoid_shape(offset=0.5):
     '''
     Custom initial shape like a trapezoid 3D shape.
     '''
-    base = 1
+    base = 2.
     width = base - offset
     length = base + offset
     height = base
@@ -229,7 +229,7 @@ def generate_template_object(name, resolution, seeds_level=0):
         connectivity = onp.array(mesh.cells())
         bmesh = fe.BoundaryMesh(mesh, "exterior")
     elif name == "trapezoid":
-        trapezoid_shape(0.)
+        trapezoid_shape(0.5)
         bmesh = fe.Mesh(f'data/xml/3d/template/trapezoid/shape.xml')
     else:
         raise ValueError('Unknown initial shape!')
@@ -343,10 +343,10 @@ def eval_sdf_helper(vertices_oriented, origin, point):
 
     return result
 
-batch_eval_sdf_helper = jax.vmap(eval_sdf_helper, in_axes=(None, None, 0), out_axes=0)
+batch_eval_sdf_helper = jax.jit(jax.vmap(eval_sdf_helper, in_axes=(None, None, 0), out_axes=0))
 
 grad_sdf_helper = jax.grad(eval_sdf_helper, argnums=(-1))
-batch_grad_sdf_helper = jax.vmap(grad_sdf_helper, in_axes=(None, None, 0), out_axes=0)
+batch_grad_sdf_helper = jax.jit(jax.vmap(grad_sdf_helper, in_axes=(None, None, 0), out_axes=0))
 
 
 def get_rot_mat(q):
