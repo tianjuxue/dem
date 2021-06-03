@@ -185,8 +185,7 @@ reduce_at = jax.jit(jax.vmap(add_to_target, in_axes=(0, 0, 0, None), out_axes=0)
 
 
 def get_mutual_distances(pointsA, pointsB):
-    return np.sqrt(np.sum(pointsA**2, axis=1).reshape(-1, 1) + \
-        np.sum(pointsB**2, axis=1).reshape(1, -1) -  2 * np.dot(pointsA, pointsB.T))
+  return np.sqrt(np.sum((pointsA[:, None, :] - pointsB[None, :, :])**2, axis=-1))
 
 
 def state_rhs_func(params, directions, connectivity, state):
@@ -207,8 +206,8 @@ def state_rhs_func(params, directions, connectivity, state):
     q = state[3:7]
     v = state[7:10]
     w = state[10:13]
-    polyhedra_intertias, polyhedron_vol, ref_centroid = compute_inertia_tensors(params, directions, connectivity, q.T)
-    I_inv = np.linalg.inv(polyhedra_intertias) 
+    polyhedra_inertias, polyhedron_vol, ref_centroid = compute_inertia_tensors(params, directions, connectivity, q.T)
+    I_inv = np.linalg.inv(polyhedra_inertias) 
     ref_seeds = get_ref_seeds(params, directions, connectivity)
     batch_phy_seeds = batch_reference_to_physical(x.T, q.T, ref_centroid, ref_seeds)
 
@@ -283,7 +282,7 @@ def state_rhs_func(params, directions, connectivity, state):
 
     contact_torques = contact_reactions[:, 3:]
     M = np.expand_dims(contact_torques, axis=-1)
-    wIw = np.expand_dims(np.cross(w.T, np.squeeze(polyhedra_intertias @  np.expand_dims(w.T, axis=-1))), axis=-1)
+    wIw = np.expand_dims(np.cross(w.T, np.squeeze(polyhedra_inertias @  np.expand_dims(w.T, axis=-1))), axis=-1)
     dw_rhs = (I_inv @ (M - wIw)).reshape(n_objects, 3).T
 
     rhs = np.concatenate([dx_rhs, dq_rhs, dv_rhs, dw_rhs], axis=0)
@@ -352,6 +351,7 @@ def vedo_plot(object_name, ref_centroid=None, states=None):
     # vedo.interactive().close()
 
 
+@jax.jit
 def compute_energy(params, directions, connectivity, state):
     x = state[0:3]
     q = state[3:7]
@@ -424,8 +424,8 @@ def drop_a_stone_3d():
     params = np.ones(len(vertices))
     output_vtk_3D_shape(vertices, connectivity, f"data/vtk/3d/vedo/{object_name}.vtk")
 
-    state = initialize_state_many_objects()
-    polyhedra_intertias_no_rotation, polyhedron_vol, ref_centroid = compute_inertia_tensors(params, directions, connectivity, state[3:7].T)
+    state = initialize_state_3_objects()
+    polyhedra_inertias_no_rotation, polyhedron_vol, ref_centroid = compute_inertia_tensors(params, directions, connectivity, state[3:7].T)
 
     num_steps = 5000
     dt = 5*1e-4
@@ -434,8 +434,8 @@ def drop_a_stone_3d():
     for i in range(num_steps):
         rhs_func = lambda variable: state_rhs_func(params, directions, connectivity, variable) 
         state = runge_kutta_4(state, rhs_func, dt)
-        e = compute_energy(params, directions, connectivity, state)
         if i % 20 == 0:
+            e = compute_energy(params, directions, connectivity, state)
             print(f"\nstep {i}, total energy={e}, quaternion square sum: {np.sum(state[3:7]**2)}")
             # print(f"state=\n{state}")
             if np.any(np.isnan(state)):
