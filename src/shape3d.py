@@ -337,10 +337,7 @@ def eval_sdf_helper(vertices_oriented, origin, point):
     Signed distance function of a point to a polyhedron defined vertices_oriented and origin
     '''
     sign = np.where(np.any(sign_to_tetrahedra(point, origin, *vertices_oriented)), -1., 1.)
-
     result = np.min(d_to_triangles(point, *vertices_oriented)) * sign
-    # result = sign
-
     return result
 
 batch_eval_sdf_helper = jax.jit(jax.vmap(eval_sdf_helper, in_axes=(None, None, 0), out_axes=0))

@@ -13,10 +13,10 @@ def main():
     vertices_oriented = object_3D.get_oriented_vertices()
     origin = np.array([0., 0., 0.])
 
-    for i in range(2):
+    for i in range(5):
 
         key = jax.random.PRNGKey(0)
-        test_points = jax.random.uniform(key, shape=(125*125*122, dim), minval=-3., maxval=3.)
+        test_points = jax.random.uniform(key, shape=(125*2*122, dim), minval=-3., maxval=3.)
         break1 = time.time()
         evals = batch_eval_sdf_helper(vertices_oriented, origin, test_points).block_until_ready()
         break2 = time.time()

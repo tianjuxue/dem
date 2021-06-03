@@ -164,9 +164,12 @@ def compute_mutual_reaction_sdf(params, directions, connectivity, ref_centroid, 
         level_set_grad = partial(batch_grad_sdf, params, directions, connectivity, ref_centroid, x_o2, q_o2)
         forces = get_frictionless_force(phy_seeds_o1, level_set_func, level_set_grad)
         reaction = get_reaction(phy_seeds_o1, x_o1, forces)
-        return reaction
+        return jax.lax.cond(index1 < index2, lambda _:reaction, f3, None)
 
-    return jax.lax.cond(index1 < index2, f2, f3, None)
+    def f1(_):
+        return np.zeros((6,))
+
+    return jax.lax.cond(index1 == index2, f1, f2, None)
 
 batch_compute_mutual_reaction_sdf = jax.jit(jax.vmap(compute_mutual_reaction_sdf, in_axes=(None,)*7 + (0,)*2, out_axes=0))
 
@@ -242,6 +245,9 @@ def state_rhs_func(params, directions, connectivity, state):
         #     reactions = np.array(list(map(body_func, collision_indices)))
 
         if running_mode == 'filter_vmap':
+            # Add padding so that when collision_indices.shape is static
+            n_bound = 6 * n_objects
+            collision_indices = np.concatenate([collision_indices, np.zeros((n_bound - len(collision_indices), 2), dtype=np.int32)], axis=0)
             reactions = batch_compute_mutual_reaction_sdf(params, directions, connectivity, 
                 ref_centroid, x.T, q.T, batch_phy_seeds, collision_indices[:, 0], collision_indices[:, 1])
 
@@ -372,8 +378,8 @@ def initialize_state_1_object():
 def initialize_state_3_objects():
     state = np.array([[10., 10., 10.],
                       [10., 10., 10.],
-                      # [2., 6, 10.],
-                      [1.1, 3.3, 10.],
+                      [2., 6, 10.],
+                      # [1.1, 3.3, 10.],
                       [1., 1., 1.],
                       [0., 0., 0.],
                       [0., 0., 0.],
@@ -418,10 +424,10 @@ def drop_a_stone_3d():
     params = np.ones(len(vertices))
     output_vtk_3D_shape(vertices, connectivity, f"data/vtk/3d/vedo/{object_name}.vtk")
 
-    state = initialize_state_3_objects()
+    state = initialize_state_many_objects()
     polyhedra_intertias_no_rotation, polyhedron_vol, ref_centroid = compute_inertia_tensors(params, directions, connectivity, state[3:7].T)
 
-    num_steps = 3000
+    num_steps = 5000
     dt = 5*1e-4
     states = [state]
     energy = []
