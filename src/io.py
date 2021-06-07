@@ -42,3 +42,11 @@ def output_vtk_3D_field(args, scalar_func, file_path):
     solutions = scalar_func(points)
     point_data = {'u': solutions}
     meshio.Mesh(points, cells, point_data=point_data).write(file_path)
+
+
+def plot_energy(energy, file_path):
+    plt.figure(num=10, figsize=(6, 6))
+    plt.plot(20*np.arange(1, len(energy) + 1, 1), energy, marker='o',  markersize=2, linestyle="-", linewidth=1, color='blue')
+    plt.xlabel("Time steps")
+    plt.ylabel("Energy")
+    plt.savefig(file_path)

@@ -172,14 +172,6 @@ def compute_energy(state, area, inertia):
     return total_energy
 
 
-def plot_energy(energy):
-    plt.figure(num=10, figsize=(6, 6))
-    plt.plot(20*np.arange(1, len(energy) + 1, 1), energy, marker='o',  markersize=2, linestyle="-", linewidth=1, color='blue')
-    plt.xlabel("Time steps")
-    plt.ylabel("Energy")
-    plt.savefig('data/pdf/energy.pdf')
-
-
 def initialize_state_1_object():
     state = np.array([[10.],
                        [2.],
@@ -248,7 +240,7 @@ def drop_a_stone_2d():
     print(f"Time elapsed {end_time-start_time}")
     print(f"Platform: {xla_bridge.get_backend().platform}")
 
-    plot_energy(np.sum(np.array(energy), axis=-1))
+    plot_energy(np.sum(np.array(energy), axis=-1), 'data/pdf/energy.pdf')
     plot_animation(seeds_collect)
 
 

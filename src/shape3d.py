@@ -332,20 +332,6 @@ class ThreeDimObject:
         self.params = np.array(params)
 
 
-def eval_sdf_helper(vertices_oriented, origin, point):
-    '''
-    Signed distance function of a point to a polyhedron defined vertices_oriented and origin
-    '''
-    sign = np.where(np.any(sign_to_tetrahedra(point, origin, *vertices_oriented)), -1., 1.)
-    result = np.min(d_to_triangles(point, *vertices_oriented)) * sign
-    return result
-
-batch_eval_sdf_helper = jax.jit(jax.vmap(eval_sdf_helper, in_axes=(None, None, 0), out_axes=0))
-
-grad_sdf_helper = jax.grad(eval_sdf_helper, argnums=(-1))
-batch_grad_sdf_helper = jax.jit(jax.vmap(grad_sdf_helper, in_axes=(None, None, 0), out_axes=0))
-
-
 def get_rot_mat(q):
     '''
     Standard transformation from quaternion to the corresponding rotation matrix.
@@ -447,6 +433,41 @@ def get_phy_vertices_oriented(params, directions, connectivity, ref_centroid, x,
     return phy_vertices_oriented, phy_pointO
 
 
+def eval_sign_helper(vertices_oriented, origin, point):
+    '''
+    Sign of a point to a polyhedron defined vertices_oriented and origin
+    '''
+    sign = np.where(np.any(sign_to_tetrahedra(point, origin, *vertices_oriented)), -1., 1.)    
+    return sign
+
+
+def eval_sdf_helper(vertices_oriented, origin, point):
+    '''
+    Signed distance function of a point to a polyhedron defined vertices_oriented and origin
+    '''
+    sign = eval_sign_helper(vertices_oriented, origin, point)
+    sdf = np.min(d_to_triangles(point, *vertices_oriented)) * sign
+    return sdf
+
+batch_eval_sdf_helper = jax.jit(jax.vmap(eval_sdf_helper, in_axes=(None, None, 0), out_axes=0))
+
+grad_sdf_helper = jax.grad(eval_sdf_helper, argnums=(-1))
+batch_grad_sdf_helper = jax.jit(jax.vmap(grad_sdf_helper, in_axes=(None, None, 0), out_axes=0))
+
+
+def eval_sign(params, directions, connectivity, ref_centroid, x, q, phy_point):
+    '''
+    Evaluate the sign of a physical point to a polyhedron.
+    The polyhedron is defined by its shape (params, directions, connectivity) and 
+    its translational and rotational position (ref_centroid, x, q)
+    '''
+    phy_vertices_oriented, phy_pointO = get_phy_vertices_oriented(params, directions, connectivity, ref_centroid, x, q)
+    sign = eval_sign_helper(phy_vertices_oriented, phy_pointO, phy_point)
+    return sign
+
+batch_eval_sign = jax.jit(jax.vmap(eval_sign, in_axes=(None,)*6 + (0,), out_axes=0))
+
+
 def eval_sdf(params, directions, connectivity, ref_centroid, x, q, phy_point):
     '''
     Evaluate the signed distance function of a physical point to a polyhedron.
@@ -454,8 +475,8 @@ def eval_sdf(params, directions, connectivity, ref_centroid, x, q, phy_point):
     its translational and rotational position (ref_centroid, x, q)
     '''
     phy_vertices_oriented, phy_pointO = get_phy_vertices_oriented(params, directions, connectivity, ref_centroid, x, q)
-    result = eval_sdf_helper(phy_vertices_oriented, phy_pointO, phy_point)
-    return result
+    sdf = eval_sdf_helper(phy_vertices_oriented, phy_pointO, phy_point)
+    return sdf
 
 batch_eval_sdf = jax.jit(jax.vmap(eval_sdf, in_axes=(None,)*6 + (0,), out_axes=0))
 

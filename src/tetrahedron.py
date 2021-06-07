@@ -62,7 +62,7 @@ def signed_tetrahedron_volume(O, D, E, F):
     FD = F - D
     return np.dot(DO, np.cross(ED, FD)) / 6.
 
-signed_tetrahedra_volumes = jax.jit(jax.vmap(signed_tetrahedron_volume, in_axes=(None, 0, 0, 0), out_axes=0))
+signed_tetrahedra_volumes = jax.vmap(signed_tetrahedron_volume, in_axes=(None, 0, 0, 0), out_axes=0)
 
 
 def tetrahedron_volume(O, D, E, F):
@@ -71,7 +71,7 @@ def tetrahedron_volume(O, D, E, F):
     ''' 
     return np.absolute(signed_tetrahedron_volume(O, D, E, F))
 
-tetrahedra_volumes = jax.jit(jax.vmap(tetrahedron_volume, in_axes=(None, 0, 0, 0), out_axes=0))
+tetrahedra_volumes = jax.vmap(tetrahedron_volume, in_axes=(None, 0, 0, 0), out_axes=0)
 
 
 
@@ -82,7 +82,7 @@ def tetrahedron_centroid(O, D, E, F):
     return (O + D + E + F) / 4.
 
 
-tetrahedra_centroids = jax.jit(jax.vmap(tetrahedron_centroid, in_axes=(None, 0, 0, 0), out_axes=0))
+tetrahedra_centroids = jax.vmap(tetrahedron_centroid, in_axes=(None, 0, 0, 0), out_axes=0)
 
 
 
@@ -101,7 +101,7 @@ def tetra_inertia_tensor(O, D, E, F, P):
     I_P = I_O - tmp_O + tmp_P
     return I_P
 
-tetra_inertia_tensors = jax.jit(jax.vmap(tetra_inertia_tensor, in_axes=(None, 0, 0, 0, None), out_axes=0))
+tetra_inertia_tensors = jax.vmap(tetra_inertia_tensor, in_axes=(None, 0, 0, 0, None), out_axes=0)
 
 
 def tetra_inertia_tensor_helper(O, D, E, F):

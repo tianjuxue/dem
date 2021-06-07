@@ -8,7 +8,7 @@ from .shape3d import generate_template_object, batch_eval_sdf_helper, batch_grad
 
 dim = 3
 
-def main():
+def func1():
     object_3D = generate_template_object('sphere', 6)
     vertices_oriented = object_3D.get_oriented_vertices()
     origin = np.array([0., 0., 0.])
@@ -25,5 +25,18 @@ def main():
         print(f"time: {break2 - break1}")
  
 
+def func2():
+    num = 1000
+    print("Started...")
+    break1 = time.time()
+    a = np.ones((num, num, dim))
+    for i in range(10):
+        b = np.ones((num, num, dim))
+        a = a + b
+    print(a[0, 0, 0])
+    break2 = time.time()
+    print(f"time: {break2 - break1}")
+
+
 if __name__ == '__main__':
-    main()
+    func2()

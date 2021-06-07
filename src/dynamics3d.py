@@ -11,8 +11,8 @@ from scipy.spatial.transform import Rotation as R
 from .arguments import args
 from .shape3d import get_phy_seeds, compute_inertia_tensor, compute_inertia_tensors, quats_mul, generate_template_object, reference_to_physical, \
 batch_eval_sdf, batch_grad_sdf, get_rot_mats, batch_reference_to_physical, quat_mul, get_ref_vertices_oriented, rotate_point, get_ref_seeds, \
-batch_eval_sdf_helper, batch_grad_sdf_helper
-from .io import output_vtk_3D_shape
+batch_eval_sdf_helper, batch_grad_sdf_helper, batch_eval_sign
+from .io import output_vtk_3D_shape, plot_energy
 from .dyn_comms import batch_wall_eval_sdf, batch_wall_grad_sdf, get_frictionless_force, runge_kutta_4
 import gc
 
@@ -139,6 +139,77 @@ def compute_wall_reaction(params, directions, connectivity, ref_centroid, x, q, 
 batch_compute_wall_reaction = jax.jit(jax.vmap(compute_wall_reaction, in_axes=(None, None, None, None, 0, 0, 0), out_axes=0))
 
 
+
+@jax.jit
+def compute_sign(params, directions, connectivity, ref_centroid, x, q, batch_phy_seeds, index1, index2):
+    '''Force (f1, f2) and torque (t) by object 2 on object 1
+    '''
+    x_o1 = x[index1]
+    x_o2 = x[index2]    
+    q_o1 = q[index1]
+    q_o2 = q[index2] 
+    phy_seeds_o1 = batch_phy_seeds[index1]
+    phy_seeds_o2 = batch_phy_seeds[index2]
+    num_seeds = len(phy_seeds_o1)
+
+    def f3(_):
+        # object 2 is master (use seeds of object 2), object 1 is slave
+        signs = batch_eval_sign(params, directions, connectivity, ref_centroid, x_o1, q_o1, phy_seeds_o2)
+        return signs
+
+    def f2(_):
+        # object 1 is master (use seeds of object 1), object 2 is slave
+        signs = batch_eval_sign(params, directions, connectivity, ref_centroid, x_o2, q_o2, phy_seeds_o1)
+        return jax.lax.cond(index1 < index2, lambda _:signs, f3, None)
+
+    def f1(_):
+        return np.ones((num_seeds,))
+
+    return jax.lax.cond(index1 == index2, f1, f2, None)
+
+compute_signs = jax.jit(jax.vmap(compute_sign, in_axes=(None,)*7 + (0,)*2, out_axes=0))
+
+
+
+@jax.jit
+def compute_mutual_reaction_sparse(params, directions, connectivity, ref_centroid, x, q, batch_phy_seeds, collision_indices, contact_index):
+    '''Force (f1, f2) and torque (t) by object 2 on object 1
+    '''
+    index1 = collision_indices[contact_index[0]][0]
+    index2 = collision_indices[contact_index[0]][1]
+    seed_index = contact_index[1]
+
+    x_o1 = x[index1]
+    x_o2 = x[index2]    
+    q_o1 = q[index1]
+    q_o2 = q[index2] 
+    phy_seeds_o1 = batch_phy_seeds[index1][seed_index].reshape(1, -1)
+    phy_seeds_o2 = batch_phy_seeds[index2][seed_index].reshape(1, -1)
+
+    def f3(_):
+        # object 2 is master (use seeds of object 2), object 1 is slave
+        level_set_func = partial(batch_eval_sdf, params, directions, connectivity, ref_centroid, x_o1, q_o1)
+        level_set_grad = partial(batch_grad_sdf, params, directions, connectivity, ref_centroid, x_o1, q_o1)
+        forces = -get_frictionless_force(phy_seeds_o2, level_set_func, level_set_grad)
+        reaction = get_reaction(phy_seeds_o2, x_o1, forces)
+        return reaction
+
+    def f2(_):
+        # object 1 is master (use seeds of object 1), object 2 is slave
+        level_set_func = partial(batch_eval_sdf, params, directions, connectivity, ref_centroid, x_o2, q_o2)
+        level_set_grad = partial(batch_grad_sdf, params, directions, connectivity, ref_centroid, x_o2, q_o2)
+        forces = get_frictionless_force(phy_seeds_o1, level_set_func, level_set_grad)
+        reaction = get_reaction(phy_seeds_o1, x_o1, forces)
+        return jax.lax.cond(index1 < index2, lambda _:reaction, f3, None)
+
+    def f1(_):
+        return np.zeros((6,))
+
+    return jax.lax.cond(contact_index[0] < 0, f1, f2, None)
+
+bacth_compute_mutual_reaction_sparse = jax.jit(jax.vmap(compute_mutual_reaction_sparse, in_axes=(None,)*8 + (0,), out_axes=0))
+
+
 @jax.jit
 def compute_mutual_reaction_sdf(params, directions, connectivity, ref_centroid, x, q, batch_phy_seeds, index1, index2):
     '''Force (f1, f2) and torque (t) by object 2 on object 1
@@ -178,10 +249,10 @@ batch_compute_mutual_reaction_sdf_index2 = jax.jit(jax.vmap(compute_mutual_react
 batch_compute_mutual_reaction_sdf_index_1 = jax.jit(jax.vmap(batch_compute_mutual_reaction_sdf_index2, in_axes=(None,)*7 + (0, None), out_axes=0))
 
 
-def add_to_target(index, target_index, reaction, target):
+def add_to_target(target_index, reaction, target):
     return jax.ops.index_add(target, target_index, reaction)
 
-reduce_at = jax.jit(jax.vmap(add_to_target, in_axes=(0, 0, 0, None), out_axes=0))
+reduce_at = jax.jit(jax.vmap(add_to_target, in_axes=(0, 0, None), out_axes=0))
 
 
 def get_mutual_distances(pointsA, pointsB):
@@ -202,14 +273,14 @@ def state_rhs_func(params, directions, connectivity, state):
     rhs: numpy array of shape (13, n_objects)
     '''
     n_objects = state.shape[1]
-    x = state[0:3]
-    q = state[3:7]
-    v = state[7:10]
-    w = state[10:13]
-    polyhedra_inertias, polyhedron_vol, ref_centroid = compute_inertia_tensors(params, directions, connectivity, q.T)
+    x = state[0:3].T
+    q = state[3:7].T
+    v = state[7:10].T
+    w = state[10:13].T
+    polyhedra_inertias, polyhedron_vol, ref_centroid = compute_inertia_tensors(params, directions, connectivity, q)
     I_inv = np.linalg.inv(polyhedra_inertias) 
     ref_seeds = get_ref_seeds(params, directions, connectivity)
-    batch_phy_seeds = batch_reference_to_physical(x.T, q.T, ref_centroid, ref_seeds)
+    batch_phy_seeds = batch_reference_to_physical(x, q, ref_centroid, ref_seeds)
 
     break1 = time.time()
 
@@ -217,12 +288,12 @@ def state_rhs_func(params, directions, connectivity, state):
         # Do not check if two objects are far apart.
         if running_mode == 'no_filter_double_vmap': 
             paired_reactions = batch_compute_mutual_reaction_sdf_index_1(params, directions, connectivity, ref_centroid, 
-                        x.T, q.T, batch_phy_seeds, np.arange(n_objects), np.arange(n_objects))
+                        x, q, batch_phy_seeds, np.arange(n_objects), np.arange(n_objects))
 
         if running_mode == 'no_filter_lax-map_vmap':
             def body_func(index):
                 return batch_compute_mutual_reaction_sdf_index2(params, directions, connectivity, ref_centroid, 
-                    x.T, q.T, batch_phy_seeds, index, np.arange(n_objects))
+                    x, q, batch_phy_seeds, index, np.arange(n_objects))
             paired_reactions = jax.lax.map(body_func, np.arange(n_objects))
 
         mutual_reactions = np.sum(paired_reactions, axis=1)
@@ -230,25 +301,34 @@ def state_rhs_func(params, directions, connectivity, state):
     if running_mode.startswith('filter'):
         # Check if two objects are far apart. If so, avoid computing mutual reactions.
         max_radius = np.max(params)
-        phy_origins = batch_reference_to_physical(x.T, q.T, ref_centroid, np.array([0., 0., 0.]))
+        phy_origins = batch_reference_to_physical(x, q, ref_centroid, np.array([0., 0., 0.]))
         mutual_distances = get_mutual_distances(phy_origins, phy_origins)
         collision_indices = np.array(np.where(mutual_distances < 2 * max_radius)).T
         collision_indices = collision_indices[np.where(collision_indices[:, 0] != collision_indices[:, 1])]
 
         def body_func(index_pair):
-            return compute_mutual_reaction_sdf(params, directions, connectivity, ref_centroid, x.T, q.T, batch_phy_seeds, index_pair[0], index_pair[1])
-
-        # if len(collision_indices) > 1:
-        #     reactions = jax.lax.map(body_func, collision_indices)
-        # else:
-        #     reactions = np.array(list(map(body_func, collision_indices)))
+            return compute_mutual_reaction_sdf(params, directions, connectivity, ref_centroid, x, q, batch_phy_seeds, index_pair[0], index_pair[1])
 
         if running_mode == 'filter_vmap':
-            # Add padding so that when collision_indices.shape is static
-            n_bound = 6 * n_objects
-            collision_indices = np.concatenate([collision_indices, np.zeros((n_bound - len(collision_indices), 2), dtype=np.int32)], axis=0)
-            reactions = batch_compute_mutual_reaction_sdf(params, directions, connectivity, 
-                ref_centroid, x.T, q.T, batch_phy_seeds, collision_indices[:, 0], collision_indices[:, 1])
+            # Add padding so that when collision_indices and contact_indices have fixed shapes
+            # Example: collision_indices [[2, 3], [3, 2]] means object 2 and object 3 are in potential collision
+            # contact_indices [[0, 1], [0, 2], [0, 5], [1, 1], [1, 2], [1, 5]] means object 2 (collision_indices[0][0])
+            # and object 3 (collision_indices[0][1]) has seeds number 1, 2 and 5 in actual contact.
+
+            n_bound_collision = 6 * n_objects
+            n_bound_contact = 10 * n_objects
+            collision_indices = np.concatenate([collision_indices, -1 * np.ones((n_bound_collision - len(collision_indices), 2), dtype=np.int32)], axis=0)
+
+            signs = compute_signs(params, directions, connectivity, ref_centroid, x, q, batch_phy_seeds, collision_indices[:, 0], collision_indices[:, 1])
+            contact_indices = np.array(np.where(signs < 0)).T
+
+            contact_indices = np.concatenate([contact_indices, -1 * np.ones((n_bound_contact - len(contact_indices), 2), dtype=np.int32)], axis=0)
+            reactions = bacth_compute_mutual_reaction_sparse(params, directions, connectivity, ref_centroid, x, q, batch_phy_seeds, 
+                collision_indices, contact_indices)
+            collision_indices = np.take(collision_indices, contact_indices[:, 0], axis=0)
+
+            # reactions = batch_compute_mutual_reaction_sdf(params, directions, connectivity, 
+            #     ref_centroid, x, q, batch_phy_seeds, collision_indices[:, 0], collision_indices[:, 1])
 
         if running_mode == 'filter_lax-map':
             reactions = jax.lax.map(body_func, collision_indices)
@@ -259,30 +339,30 @@ def state_rhs_func(params, directions, connectivity, state):
         if running_mode == 'filter_alternative':
             ref_vertice_normals = compute_normals(params, directions, connectivity)
             reactions = batch_compute_mutual_reaction_vertices(params, directions, connectivity, ref_vertice_normals, 
-                ref_centroid, x.T, q.T, batch_phy_seeds, collision_indices[:, 0], collision_indices[:, 1])
+                ref_centroid, x, q, batch_phy_seeds, collision_indices[:, 0], collision_indices[:, 1])
 
         mutual_reactions = np.zeros((n_objects, 6))
-        mutual_reactions = np.sum(reduce_at(np.arange(len(collision_indices)), collision_indices[:, 0], reactions, mutual_reactions), axis=0)
+        mutual_reactions = np.sum(reduce_at(collision_indices[:, 0], reactions, mutual_reactions), axis=0)
 
         # if len(collision_indices) > 1:
         #     print("Collision may happen...")
 
     break2 = time.time()
 
-    wall_reactions = batch_compute_wall_reaction(params, directions, connectivity, ref_centroid, x.T, q.T, batch_phy_seeds)
+    wall_reactions = batch_compute_wall_reaction(params, directions, connectivity, ref_centroid, x, q, batch_phy_seeds)
     contact_reactions = mutual_reactions + wall_reactions
 
-    dx_rhs = v
+    dx_rhs = v.T
 
-    w_quat = np.concatenate([np.zeros((1, n_objects)), w], axis=0)
-    dq_rhs = 0.5 * quats_mul(w_quat.T, q.T).T
+    w_quat = np.concatenate([np.zeros((1, n_objects)), w.T], axis=0)
+    dq_rhs = 0.5 * quats_mul(w_quat.T, q).T
 
     contact_forces = contact_reactions[:, :3]
     dv_rhs = (contact_forces / polyhedron_vol + np.array([[0., 0., -gravity]])).T
 
     contact_torques = contact_reactions[:, 3:]
     M = np.expand_dims(contact_torques, axis=-1)
-    wIw = np.expand_dims(np.cross(w.T, np.squeeze(polyhedra_inertias @  np.expand_dims(w.T, axis=-1))), axis=-1)
+    wIw = np.expand_dims(np.cross(w, np.squeeze(polyhedra_inertias @  np.expand_dims(w, axis=-1))), axis=-1)
     dw_rhs = (I_inv @ (M - wIw)).reshape(n_objects, 3).T
 
     rhs = np.concatenate([dx_rhs, dq_rhs, dv_rhs, dw_rhs], axis=0)
@@ -304,14 +384,14 @@ def vedo_plot(object_name, ref_centroid=None, states=None):
     if states is None:
         states = np.load('data/numpy/vedo/states.npy')
 
-    vedo.settings.useDepthPeeling = False
+    n_objects = states.shape[-1]
+
+    # vedo.settings.useDepthPeeling = False
 
     world = vedo.Box([box_size/2., box_size/2., box_size/2.], box_size, box_size, box_size).wireframe()
 
     stone = vedo.Mesh(f"data/vtk/3d/vedo/{object_name}.vtk").c("red").addShadow(z=0)
     stone.origin(*ref_centroid)
-
-    n_objects = states.shape[-1]
     stones = [stone.clone() for _ in range(n_objects)]
 
     vedo.show(world, *stones, axes=4, viewup="z", interactive=0)
@@ -344,9 +424,6 @@ def vedo_plot(object_name, ref_centroid=None, states=None):
 
         vd.addFrame()
 
-        # if plotter.escaped: 
-        #     break
-
     vd.close() 
     # vedo.interactive().close()
 
@@ -361,15 +438,7 @@ def compute_energy(params, directions, connectivity, state):
     total_energy = 1./2. * np.sum(w.T * np.squeeze(inertias @ np.expand_dims(w.T, axis=-1))) + 1./2. * vol * np.sum(v**2) + vol * gravity * np.sum(x[2])
     return total_energy
  
-
-def plot_energy(energy):
-    plt.figure(num=10, figsize=(6, 6))
-    plt.plot(20*np.arange(1, len(energy) + 1, 1), energy, marker='o',  markersize=2, linestyle="-", linewidth=1, color='blue')
-    plt.xlabel("Time steps")
-    plt.ylabel("Energy")
-    plt.savefig('data/pdf/energy3d.pdf')
-
-
+ 
 def initialize_state_1_object():
     state = np.array([10., 10., 2., 1., 0., 0., 0., 0., 0., 0., 0., 0., 0.]).reshape(-1, 1)
     return state
@@ -378,8 +447,9 @@ def initialize_state_1_object():
 def initialize_state_3_objects():
     state = np.array([[10., 10., 10.],
                       [10., 10., 10.],
-                      [2., 6, 10.],
+                      # [2., 6, 10.],
                       # [1.1, 3.3, 10.],
+                      [1.1, 3, 10.],
                       [1., 1., 1.],
                       [0., 0., 0.],
                       [0., 0., 0.],
@@ -394,7 +464,7 @@ def initialize_state_3_objects():
 
 
 def initialize_state_many_objects():
-    spacing = np.linspace(2., 18., 5)
+    spacing = np.linspace(2., box_size - 2., 5)
     n_objects = len(spacing)**3
     x1, x2, x3 = np.meshgrid(*([spacing]*3), indexing='ij')
     key = jax.random.PRNGKey(0)
@@ -424,7 +494,7 @@ def drop_a_stone_3d():
     params = np.ones(len(vertices))
     output_vtk_3D_shape(vertices, connectivity, f"data/vtk/3d/vedo/{object_name}.vtk")
 
-    state = initialize_state_3_objects()
+    state = initialize_state_many_objects()
     polyhedra_inertias_no_rotation, polyhedron_vol, ref_centroid = compute_inertia_tensors(params, directions, connectivity, state[3:7].T)
 
     num_steps = 5000
@@ -454,7 +524,7 @@ def drop_a_stone_3d():
     np.save('data/numpy/vedo/ref_centroid.npy', ref_centroid)
     np.save('data/numpy/vedo/states.npy', states)
 
-    plot_energy(energy)
+    plot_energy(energy, 'data/pdf/energy3d.pdf')
     vedo_plot(object_name, ref_centroid, states)
 
 
@@ -497,6 +567,6 @@ def drop_a_stone_3d():
 #     vedo_plot(object_name, ref_centroid, np.array(states))
 
 if __name__ == '__main__':
-    drop_a_stone_3d()
+    # drop_a_stone_3d()
     # test_vis()
-    # vedo_plot('sphere')
+    vedo_plot('sphere')

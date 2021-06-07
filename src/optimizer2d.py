@@ -12,6 +12,7 @@ from matplotlib.animation import FuncAnimation
 from .arguments import args
 from .shape2d import get_phy_seeds, batch_get_phy_seeds, batch_eval_sdf, batch_grad_sdf, eval_mass, reference_to_physical
 from .dynamics2d import solve_states, explicit_euler, jac_rhs_state, batch_jac_rhs_params, plot_animation
+from .io import plot_energy
 
 
 def objective(params, final_state):
