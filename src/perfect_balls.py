@@ -15,8 +15,8 @@ from .io import plot_energy
 
 dim = args.dim
 gravity = args.gravity
-# box_size = args.box_size
-box_size = 30.
+box_size = args.box_size
+# box_size = 300.
 
 
 def env_distance_value(point):
@@ -97,6 +97,39 @@ def compute_energy(radii, state):
     return total_energy
 
 
+
+def compute_reactions_helper(Coulomb_fric_coeff,
+                             normal_contact_stiffness,
+                             damping_coeff,
+                             tangent_fric_coeff,
+                             rolling_fric_coeff,
+                             intersected_distances,
+                             unit_vectors, 
+                             relative_v, 
+                             relative_w, 
+                             reduced_mass, 
+                             reduced_radius,
+                             arms):
+    elastic_normal_forces = -normal_contact_stiffness * np.where(intersected_distances > 0., intersected_distances, 0.)[..., None] * unit_vectors
+
+    normal_velocity = np.sum(relative_v * unit_vectors, axis=-1)[..., None] * unit_vectors
+    damping_forces = 2 * damping_coeff * np.where(intersected_distances > 0., reduced_mass, 0.)[..., None] * normal_velocity
+
+    tangent_velocity = relative_v - normal_velocity
+    friction = 2 * tangent_fric_coeff * reduced_mass[..., None] * tangent_velocity
+    friction_norms, friction_unit_vectors = get_unit_vectors(friction)
+    friction_bounds = Coulomb_fric_coeff * np.sqrt(np.sum(elastic_normal_forces**2, axis=-1))
+    friction_forces = np.where(friction_norms < friction_bounds, friction_norms, friction_bounds )[..., None] * friction_unit_vectors
+
+    _, relative_w_unit_vectors = get_unit_vectors(relative_w)
+    rolling_torque = rolling_fric_coeff * np.linalg.norm(elastic_normal_forces, axis=-1)[..., None] * reduced_radius[..., None] * relative_w_unit_vectors
+
+    forces = elastic_normal_forces + damping_forces + friction_forces
+    torques = np.cross(arms, forces) + rolling_torque
+
+    return forces, torques
+
+
 @jax.jit
 def state_rhs_func(radii, state):
     n_objects = state.shape[1]
@@ -114,77 +147,46 @@ def state_rhs_func(radii, state):
  
     mutual_vectors = x[None, :, :] - x[:, None, :]
     mutual_distances,  mutual_unit_vectors = get_unit_vectors(mutual_vectors)
-    intersected_distances = radii[None, :] + radii[:, None] - mutual_distances
-    elastic_normal_forces = -normal_contact_stiffness * np.where(intersected_distances > 0., intersected_distances, 0.)[:, :, None] * mutual_unit_vectors
+    mutual_intersected_distances = radii[None, :] + radii[:, None] - mutual_distances
+    mutual_contact_points = x[:, None, :] + (radii[:, None] - mutual_intersected_distances / 2.)[:, :, None] * mutual_unit_vectors
+    mutual_arms_self = mutual_contact_points - x[:, None, :]
+    mutual_arms_other = mutual_contact_points - x[None, :, :]
+    mutual_relative_v = v[None, :, :] + np.cross(w[None, :, :], mutual_arms_other) - v[:, None, :] - np.cross(w[:, None, :], mutual_arms_self)
+    mutual_relative_w = w[None, :, :] - w[:, None, :] 
+    mutual_reduced_mass = vol[None, :] * vol[:, None] / (vol[None, :] + vol[:, None])
+    mutual_reduced_radius = radii[None, :] * radii[:, None] / (radii[None, :] + radii[:, None])
 
-    reduced_mass = vol[None, :] * vol[:, None] / (vol[None, :] + vol[:, None])
-    contac_points = x[:, None, :] + (radii[:, None] - intersected_distances / 2.)[:, :, None] * mutual_unit_vectors
-    arms_self = contac_points - x[:, None, :]
-    arms_other = contac_points - x[None, :, :]
-    relative_velocity = v[None, :, :] + np.cross(w[None, :, :], arms_other) - v[:, None, :] - np.cross(w[:, None, :], arms_self)
-    normal_velocity = np.sum(relative_velocity * mutual_unit_vectors, axis=-1)[:, :, None] * mutual_unit_vectors
-    damping_forces = 2 * damping_coeff * np.where(intersected_distances > 0., reduced_mass, 0.)[:, :, None] * normal_velocity
-
-    tangent_velocity = relative_velocity - normal_velocity
-    fric_mutual = 2 * tangent_fric_coeff * reduced_mass[:, :, None] * tangent_velocity
-    fric_mutual_norms, fric_mutual_unit_vectors = get_unit_vectors(fric_mutual)
-    fric_mutual_bounds = Coulomb_fric_coeff * np.sqrt(np.sum(elastic_normal_forces**2, axis=-1))
-    fric_mutual_forces = np.where(fric_mutual_norms < fric_mutual_bounds, fric_mutual_norms, fric_mutual_bounds )[:, :, None] * fric_mutual_unit_vectors
-
-    reduced_radius = radii[None, :] * radii[:, None] / (radii[None, :] + radii[:, None])
-    relative_w = w[None, :, :] - w[:, None, :] 
-    _, relative_w_unit_vectors = get_unit_vectors(relative_w)
-    rolling_torque = rolling_fric_coeff * np.linalg.norm(elastic_normal_forces, axis=-1)[:, :, None] * reduced_radius[:, :, None] * relative_w_unit_vectors
-
-    mutual_forces = elastic_normal_forces + damping_forces + fric_mutual_forces
-    mutual_torques = np.cross(arms_self, mutual_forces) + rolling_torque
+    mutual_forces, mutual_torques = compute_reactions_helper(Coulomb_fric_coeff, normal_contact_stiffness, damping_coeff, 
+        tangent_fric_coeff, rolling_fric_coeff, mutual_intersected_distances, mutual_unit_vectors, mutual_relative_v, 
+        mutual_relative_w, mutual_reduced_mass, mutual_reduced_radius, mutual_arms_self)
     mutual_reactions = np.concatenate((np.sum(mutual_forces, axis=1), np.sum(mutual_torques, axis=1)), axis=-1)
-
 
     env_intersected_distances = radii - env_distance_values(x)
     env_unit_vectors = -env_distance_grads(x)
-    env_elastic_normal_forces = -normal_contact_stiffness * np.where(env_intersected_distances > 0., env_intersected_distances, 0.)[:, None] * env_unit_vectors
- 
     env_contac_points = x + (radii - env_intersected_distances / 2.)[:, None] * env_unit_vectors
     env_arms = env_contac_points - x
-    env_relative_velocity = -v - np.cross(w, env_arms)
-    env_normal_velocity = np.sum(env_relative_velocity * env_unit_vectors, axis=-1)[:, None] * env_unit_vectors
-    env_damping_forces = 2 * damping_coeff * np.where(env_intersected_distances > 0., vol, 0.)[:, None] * env_normal_velocity
+    env_relative_v = -v - np.cross(w, env_arms)
+    env_relative_w = -w
+    env_reduced_mass = vol
+    env_reduced_radius = radii
 
-    env_tangent_velocity = env_relative_velocity - env_normal_velocity
-    fric_env = 2 * tangent_fric_coeff * vol[:, None] * env_tangent_velocity
-    fric_env_norms, fric_env_unit_vectors = get_unit_vectors(fric_env)
-    fric_env_bounds = Coulomb_fric_coeff * np.sqrt(np.sum(env_elastic_normal_forces**2, axis=-1))
-    fric_env_forces = np.where(fric_env_norms < fric_env_bounds, fric_env_norms, fric_env_bounds)[:, None] * fric_env_unit_vectors
-
-    _, env_relative_w_unit_vectors = get_unit_vectors(-w)
-    env_rolling_torque = rolling_fric_coeff * np.linalg.norm(env_elastic_normal_forces, axis=-1)[:, None] * radii[:, None] * env_relative_w_unit_vectors
-
-    env_forces = env_elastic_normal_forces + env_damping_forces + fric_env_forces
-    env_torques = np.cross(env_arms, env_forces) + env_rolling_torque
+    env_forces, env_torques = compute_reactions_helper(Coulomb_fric_coeff, normal_contact_stiffness, damping_coeff, 
+        tangent_fric_coeff, rolling_fric_coeff, env_intersected_distances, env_unit_vectors, env_relative_v, 
+        env_relative_w, env_reduced_mass, env_reduced_radius, env_arms)
     env_reactions = np.concatenate((env_forces, env_torques), axis=-1)
-
 
     contact_reactions = mutual_reactions + env_reactions
 
-
-    dx_rhs = v.T
-
+    dx_rhs = v
     w_quat = np.concatenate([np.zeros((1, n_objects)), w.T], axis=0)
-    dq_rhs = 0.5 * quats_mul(w_quat.T, q).T
-
-    contact_forces = contact_reactions[:, :3]
-    dv_rhs = (contact_forces / vol[:, None] + np.array([[0., 0., -gravity]])).T
-
-    contact_torques = contact_reactions[:, 3:]
-    M = np.expand_dims(contact_torques, axis=-1)
-    wIw = np.expand_dims(np.cross(w, np.squeeze(inertias @  np.expand_dims(w, axis=-1))), axis=-1)
-
-    # Check the correctness of using this reshape
+    dq_rhs = 0.5 * quats_mul(w_quat.T, q)
+    contact_forces = contact_reactions[:, :dim]
+    dv_rhs = (contact_forces / vol[:, None] + np.array([[0., 0., -gravity]]))
+    contact_torques = contact_reactions[:, dim:]
+    wIw = np.cross(w, np.squeeze(inertias @  w[..., None]))
     I_inv = np.linalg.inv(inertias) 
-    dw_rhs = (I_inv @ (M - wIw)).reshape(n_objects, 3).T
-
-    rhs = np.concatenate([dx_rhs, dq_rhs, dv_rhs, dw_rhs], axis=0)
+    dw_rhs = np.squeeze((I_inv @ (contact_torques - wIw)[..., None]), axis=-1)
+    rhs = np.concatenate([dx_rhs, dq_rhs, dv_rhs, dw_rhs], axis=1).T
 
     return rhs
 
@@ -208,7 +210,7 @@ def initialize_state_3_objects():
 
 
 def initialize_state_many_objects():
-    spacing = np.linspace(2., box_size - 2., 10)
+    spacing = np.linspace(2., box_size - 2., 5)
     n_objects = len(spacing)**3
     x1, x2, x3 = np.meshgrid(*([spacing]*3), indexing='ij')
     key = jax.random.PRNGKey(0)
