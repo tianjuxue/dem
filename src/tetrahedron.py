@@ -52,7 +52,6 @@ def norm(x):
   return np.sqrt(safe_x)
 
 
-
 def signed_tetrahedron_volume(O, D, E, F):
     '''
     Signed volume of a tetrahedron with vertices (O, D, E, F)

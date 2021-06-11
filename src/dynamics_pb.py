@@ -7,7 +7,7 @@ import time
 import matplotlib.pyplot as plt
 import vedo
 from scipy.spatial.transform import Rotation as R
-from .dyn_comms import runge_kutta_4
+from .dyn_comms import runge_kutta_4, explicit_euler
 from .arguments import args
 from .shape3d import quats_mul, quat_mul, get_rot_mats
 from .io import plot_energy
@@ -20,7 +20,8 @@ box_size = args.box_size
 
 
 def env_distance_value(point):
-    distances_to_walls = np.concatenate((point - 0., box_size - point))
+    # distances_to_walls = np.concatenate((point - 0., box_size - point))
+    distances_to_walls = np.absolute(point[2])
     return np.min(distances_to_walls)
 
 env_distance_values = jax.vmap(env_distance_value, in_axes=0, out_axes=0)
@@ -55,10 +56,10 @@ def vedo_plot(object_name, radius, states=None):
  
     n_objects = states.shape[-1]
 
-    if not hasattr(radius, "__len__"):
-        radius = np.array([radius] * n_objects)
-    else:
+    if hasattr(radius, "__len__"):
         radius = radius.reshape(-1)
+    else:
+        radius = np.array([radius] * n_objects)
 
     assert(radius.shape == (n_objects,))
 
@@ -139,12 +140,19 @@ def state_rhs_func(radii, state):
     w = state[10:13].T
     inertias, vol = compute_sphere_inertia_tensors(radii, n_objects)
 
+    # Coulomb_fric_coeff = 0.5
+    # normal_contact_stiffness = 1e5
+    # damping_coeff = 1e1
+    # tangent_fric_coeff = 1e1
+    # rolling_fric_coeff = 1e-1
+ 
     Coulomb_fric_coeff = 0.5
-    normal_contact_stiffness = 1e5
+    normal_contact_stiffness = 1e4
     damping_coeff = 1e1
     tangent_fric_coeff = 1e1
-    rolling_fric_coeff = 1e-1
- 
+    rolling_fric_coeff = 0.2
+
+
     mutual_vectors = x[None, :, :] - x[:, None, :]
     mutual_distances,  mutual_unit_vectors = get_unit_vectors(mutual_vectors)
     mutual_intersected_distances = radii[None, :] + radii[:, None] - mutual_distances
@@ -226,8 +234,10 @@ def drop_a_stone_3d():
     start_time = time.time()
     state = initialize_state_3_objects()
     radii = np.ones(state.shape[1])
+    # num_steps = 6000
+    # dt = 5*1e-4
     num_steps = 3000
-    dt = 5*1e-4
+    dt = 1e-3
     states = [state]
     energy = []
     for i in range(num_steps):
