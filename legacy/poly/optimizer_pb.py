@@ -4,7 +4,7 @@ import jax.numpy as np
 from jax import grad, jit, vmap
 
 
-#TODO...
+# TODO...
 
 @jax.jit
 def adjoint_rhs_func(params, state, adjoint):

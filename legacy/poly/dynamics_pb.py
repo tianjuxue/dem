@@ -152,7 +152,6 @@ def state_rhs_func(radii, state):
     tangent_fric_coeff = 1e1
     rolling_fric_coeff = 0.2
 
-
     mutual_vectors = x[None, :, :] - x[:, None, :]
     mutual_distances,  mutual_unit_vectors = get_unit_vectors(mutual_vectors)
     mutual_intersected_distances = radii[None, :] + radii[:, None] - mutual_distances
