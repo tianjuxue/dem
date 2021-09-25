@@ -8,18 +8,16 @@ import time
 import matplotlib.pyplot as plt
 import vedo
 from scipy.spatial.transform import Rotation as R
-# from .shape3d import quats_mul, quat_mul, get_rot_mats
-# from .io import plot_energy
-
+from .utils import quats_mul, quat_mul
+from .io import plot_energy, vedo_plot
 from jax_dem.arguments import args
-from jax_dem.partition import cell_fn, indices_1_to_27
+from jax_dem.partition import cell_fn, indices_1_to_27, prune_neighbour_list
 
 
 env_top = args.env_top
 env_bottom = args.env_bottom
 dim = args.dim
 gravity = args.dim
-# box_size = args.box_size
 
 
 def env_distance_value(point):
@@ -77,6 +75,10 @@ def compute_reactions_helper(Coulomb_fric_coeff,
     return forces, torques
 
 
+
+
+
+@jax.jit
 def state_rhs_func(state, t, *args):
     radii, = args
     n_objects = state.shape[1]
@@ -87,13 +89,15 @@ def state_rhs_func(state, t, *args):
     inertias, vol = compute_sphere_inertia_tensors(radii, n_objects)
 
     box_size = onp.array([100., 100., 100.])
-    cell_capacity = 2
+    cell_capacity = 5
     minimum_cell_size = 1.
 
     cell_id, indices = cell_fn(x, box_size, minimum_cell_size, cell_capacity)
 
     neighour_indices = tuple(indices_1_to_27(indices))
     neighour_ids = cell_id[neighour_indices].reshape(n_objects, -1) # (n_objects, dim**3 * cell_capacity)
+
+    neighour_ids = prune_neighbour_list(x, radii, neighour_ids)
 
     neighour_x = x[neighour_ids]
     neighour_v = v[neighour_ids]
@@ -180,32 +184,6 @@ def runge_kutta_4(variable, rhs, dt):
     return y_1
 
 
-def get_rot_mat(q):
-    '''
-    Standard transformation from quaternion to the corresponding rotation matrix.
-    Reference: https://en.wikipedia.org/wiki/Quaternions_and_spatial_rotation
-    '''
-    return np.array([[q[0]*q[0] + q[1]*q[1] - q[2]*q[2] - q[3]*q[3], 2*q[1]*q[2] - 2*q[0]*q[3], 2*q[1]*q[3] + 2*q[0]*q[2]],
-                     [2*q[1]*q[2] + 2*q[0]*q[3], q[0]*q[0] - q[1]*q[1] + q[2]*q[2] - q[3]*q[3], 2*q[2]*q[3] - 2*q[0]*q[1]],
-                     [2*q[1]*q[3] - 2*q[0]*q[2], 2*q[2]*q[3] + 2*q[0]*q[1], q[0]*q[0] - q[1]*q[1] - q[2]*q[2] + q[3]*q[3]]])
-
-
-get_rot_mats = jax.jit(jax.vmap(get_rot_mat, in_axes=0, out_axes=0))
-
-
-def quat_mul(q, p):
-    '''
-    Standard quaternion multiplication.
-    '''
-    return np.array([q[0]*p[0] - q[1]*p[1] - q[2]*p[2] - q[3]*p[3],
-                     q[0]*p[1] + q[1]*p[0] + q[2]*p[3] - q[3]*p[2],
-                     q[0]*p[2] + q[2]*p[0] - q[1]*p[3] + q[3]*p[1],
-                     q[0]*p[3] + q[3]*p[0] + q[1]*p[2] - q[2]*p[1]])
-
-quats_mul = jax.jit(jax.vmap(quat_mul, in_axes=(0, 0), out_axes=0))
-
-
-
 @jax.jit
 def compute_energy(radii, state):
     x = state[0:3].T
@@ -218,55 +196,11 @@ def compute_energy(radii, state):
     return total_energy
 
 
-def plot_energy(energy, file_path):
-    plt.figure(num=10, figsize=(6, 6))
-    plt.plot(20*np.arange(1, len(energy) + 1, 1), energy, marker='o',  markersize=2, linestyle="-", linewidth=1, color='blue')
-    plt.xlabel("Time steps")
-    plt.ylabel("Energy")
-    plt.savefig(file_path)
-
-
-def vedo_plot(object_name, radius, states=None):
-    if states is None:
-        states = np.load(f'data/numpy/vedo/states_{object_name}.npy')
- 
-    n_objects = states.shape[-1]
-
-    if hasattr(radius, "__len__"):
-        radius = radius.reshape(-1)
-    else:
-        radius = np.array([radius] * n_objects)
-
-    assert(radius.shape == (n_objects,))
-
-    world = vedo.Box(size=[env_bottom, env_top, env_bottom, env_top, env_bottom, env_top]).wireframe()
-    vedo.show(world, axes=4, viewup="z", interactive=0)
-    vd = vedo.Video(f"data/mp4/3d/{object_name}.mp4", fps=30)
-    # Modify vd.options so that preview on Mac OS is enabled
-    # https://apple.stackexchange.com/questions/166553/why-wont-video-from-ffmpeg-show-in-quicktime-imovie-or-quick-preview
-    vd.options = "-b:v 8000k -pix_fmt yuv420p"
-
-    for s in range(len(states)):
-        x = states[s][0:3].T
-        q = states[s][3:7].T
-        initial_arrow = radius.reshape(-1, 1) * np.array([[0., 0., 1]])
-        rot_matrices = get_rot_mats(q)
-        endPoints = np.squeeze(rot_matrices @ initial_arrow[..., None], axis=-1) + x
-        arrows = vedo.Arrows(startPoints=x, endPoints=endPoints, c="green")
-        balls = vedo.Spheres(centers=x, r=radius, c="red", alpha=0.5)
-        plotter = vedo.show(world, balls, arrows, resetcam=False)
-        print(f"frame: {s} in {len(states) - 1}")
-        vd.addFrame()
-
-    vd.close() 
-    # vedo.interactive().close()
-
-
 def initialize_state_many_objects(key):
-    spacing = np.linspace(env_bottom + 0.1*(env_top - env_bottom), env_top - 0.1*(env_top - env_bottom), 25)
+    spacing = np.linspace(env_bottom + 0.1*(env_top - env_bottom), env_top - 0.1*(env_top - env_bottom), 10)
 
     radius = 0.5
-    n_objects_axis = 10
+    # n_objects_axis = 10
     # spacing = np.linspace(env_bottom + 2*radius, env_bottom + (4*n_objects_axis - 2)*radius, n_objects_axis)
     n_objects = len(spacing)**3
     x1, x2, x3 = np.meshgrid(*([spacing]*3), indexing='ij')
@@ -278,7 +212,6 @@ def initialize_state_many_objects(key):
     radii = radius * np.ones(state.shape[1])
 
     return state, radii
-
 
 
 def odeint_rk4(f, y0, t, *args):
@@ -326,7 +259,7 @@ def odeint_rk4(f, y0, t, *args):
 # odeint_rk4 = jax.custom_jvp(odeint_rk4, nondiff_argnums=(0,))
 
 
- 
+
 def simulate_odeint(key):
 
     object_name = 'sparse_perfect_ball'
@@ -382,6 +315,11 @@ def simulate_scan(key):
 def simulate_for(key):
     object_name = 'sparse_perfect_ball'
     state, radii = initialize_state_many_objects(key)
+
+    # states = np.load(f'data/numpy/vedo/states_{object_name}.npy')
+    # vedo_plot(object_name, radii, states)
+    # exit()
+
     # num_steps = 6000
     # dt = 5*1e-4
     num_steps = 100
@@ -391,7 +329,7 @@ def simulate_for(key):
     energy = []
     for i in range(num_steps):
         t += dt
-        rhs_func = lambda variable: jax.jit(state_rhs_func)(variable, t, radii)
+        rhs_func = lambda variable: state_rhs_func(variable, t, radii)
         state = runge_kutta_4(state, rhs_func, dt)
         if i % 20 == 0:
             e = compute_energy(radii, state)
@@ -406,19 +344,20 @@ def simulate_for(key):
     states = np.array(states)
     energy = np.array(energy)
 
-    # print(f"Platform: {xla_bridge.get_backend().platform}")
-    # np.save(f'data/numpy/vedo/states_{object_name}.npy', states)
+    print(f"Platform: {xla_bridge.get_backend().platform}")
+    np.save(f'data/numpy/vedo/states_{object_name}.npy', states)
     # plot_energy(energy, f'data/pdf/energy_{object_name}.pdf')
     # vedo_plot(object_name, radii, states)
     return states
 
 
+def run():
+    start_time = time.time()
+    key = jax.random.PRNGKey(0)
+    ys = simulate_for(key)
+    end_time = time.time()
+    print(f"Time elapsed {end_time-start_time}")   
+
+
 if __name__ == '__main__':
-    for i in range(1):
-        start_time = time.time()
-        key = jax.random.PRNGKey(i)
-        ys = simulate_for(key)
-        print(ys.shape)
-        print(ys[-1, 0, -1])
-        end_time = time.time()
-        print(f"Time elapsed {end_time-start_time}")
+    run()

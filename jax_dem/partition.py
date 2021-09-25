@@ -143,3 +143,21 @@ def indices_1_to_27(indices):
     offsets = np.stack(np.meshgrid(*([offset]*3), indexing='ij')).reshape(3, -1)
     expanded_indices = indices[:, :, None] + offsets[None, :, :]
     return np.transpose(expanded_indices, axes=(1, 0, 2))
+
+
+def prune_neighbour_list(x, radii, neighour_ids):
+    occupancy = 10
+    n_objects = x.shape[0]
+    neighour_x = x[neighour_ids]
+    neighour_radii = radii[neighour_ids]
+    mutual_vectors = neighour_x - x[:, None, :]
+    mutual_distances = np.sqrt(np.sum(mutual_vectors**2, axis=-1))
+    mutual_intersected_distances = neighour_radii + radii[:, None] - mutual_distances
+    mask = np.logical_and(mutual_intersected_distances > 0, neighour_ids < n_objects)
+    out_idx = n_objects * np.ones(neighour_ids.shape, np.int32)
+    cumsum = np.cumsum(mask, axis=1)
+    index = np.where(mask, cumsum - 1, neighour_ids.shape[1] - 1)
+    p_index = np.arange(neighour_ids.shape[0])[:, None]
+    out_idx = jax.ops.index_update(out_idx, jax.ops.index[p_index, index], neighour_ids)
+
+    return out_idx[:, :occupancy]
