@@ -3,7 +3,7 @@ import jax.numpy as np
 import numpy as onp
 import matplotlib.pyplot as plt
 import vedo
-
+from jax_dem.utils import get_rot_mats
 
 def plot_energy(energy, file_path):
     plt.figure(num=10, figsize=(6, 6))
@@ -13,7 +13,7 @@ def plot_energy(energy, file_path):
     plt.savefig(file_path)
 
 
-def vedo_plot(object_name, radius, states=None):
+def vedo_plot(object_name, radius, bottom, top, states=None):
     if states is None:
         states = np.load(f'data/numpy/vedo/states_{object_name}.npy')
  
@@ -26,8 +26,12 @@ def vedo_plot(object_name, radius, states=None):
 
     assert(radius.shape == (n_objects,))
 
-    world = vedo.Box(size=[env_bottom, env_top, env_bottom, env_top, env_bottom, env_top]).wireframe()
-    vedo.show(world, axes=4, viewup="z", interactive=0)
+    world = vedo.Box(size=[bottom, top, bottom, top, bottom, top]).wireframe()
+ 
+    # vedo.show(world, axes=4, viewup="z", interactive=0)
+
+    vedo.show(world, axes=4, camera={'pos':[100, 50, 50], 'viewup':[0, 0, 1]}, interactive=0)
+
     vd = vedo.Video(f"data/mp4/3d/{object_name}.mp4", fps=30)
     # Modify vd.options so that preview on Mac OS is enabled
     # https://apple.stackexchange.com/questions/166553/why-wont-video-from-ffmpeg-show-in-quicktime-imovie-or-quick-preview
@@ -47,3 +51,5 @@ def vedo_plot(object_name, radius, states=None):
 
     vd.close() 
     # vedo.interactive().close()
+
+
