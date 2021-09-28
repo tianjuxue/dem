@@ -15,12 +15,8 @@ import jax.numpy as np
 
 
 Array = np.ndarray
-
 i32 = np.int32
-i64 = np.int64
-
 f32 = np.float32
-f64 = np.float64
 
 
 def _cell_dimensions(spatial_dimension: int,
@@ -32,13 +28,13 @@ def _cell_dimensions(spatial_dimension: int,
 
     # NOTE(schsam): Should we auto-cast based on box_size? I can't imagine a case
     # in which the box_size would not be accurately represented by an f32.
-    if (isinstance(box_size, onp.ndarray) and (box_size.dtype == np.int32 or box_size.dtype == np.int64)):
+    if (isinstance(box_size, onp.ndarray) and (box_size.dtype == np.int32)):
         box_size = float(box_size)
 
 
     cells_per_side = onp.floor(box_size / minimum_cell_size)
     cell_size = box_size / cells_per_side
-    cells_per_side = onp.array(cells_per_side, dtype=np.int64)
+    cells_per_side = onp.array(cells_per_side, dtype=np.int32)
 
     if isinstance(box_size, onp.ndarray):
         if box_size.ndim == 1 or box_size.ndim == 2:
@@ -63,11 +59,11 @@ def _compute_hash_constants(spatial_dimension: int,
                             cells_per_side: Array) -> Array:
 
     if cells_per_side.size == 1:
-        return np.array([[cells_per_side ** d for d in range(spatial_dimension)]], dtype=np.int64)[::-1]
+        return np.array([[cells_per_side ** d for d in range(spatial_dimension)]], dtype=np.int32)[::-1]
     elif cells_per_side.size == spatial_dimension:
         one = np.array([1], dtype=np.int32)
         cells_per_side = np.concatenate((one, cells_per_side[:-1]))
-        return np.array(np.cumprod(cells_per_side), dtype=np.int64)[::-1]
+        return np.array(np.cumprod(cells_per_side), dtype=np.int32)[::-1]
     else:
         raise ValueError()
 
@@ -101,7 +97,7 @@ def cell_fn(R, box_size, minimum_cell_size, cell_capacity):
     hash_multipliers = _compute_hash_constants(dim, cells_per_side)
 
     # Create cell list data.
-    particle_id = lax.iota(np.int64, N)
+    particle_id = lax.iota(np.int32, N)
     # NOTE(schsam): We use the convention that particles that are successfully,
     # copied have their true id whereas particles empty slots have id = N.
     # Then when we copy data back from the grid, copy it to an array of shape
@@ -123,7 +119,7 @@ def cell_fn(R, box_size, minimum_cell_size, cell_capacity):
     sorted_hash = hashes[sort_map]
     sorted_id = particle_id[sort_map]
 
-    sorted_cell_id = np.mod(lax.iota(np.int64, N), cell_capacity)
+    sorted_cell_id = np.mod(lax.iota(np.int32, N), cell_capacity)
     sorted_cell_id = sorted_hash * cell_capacity + sorted_cell_id
 
     sorted_id = np.reshape(sorted_id, (N, 1))

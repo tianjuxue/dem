@@ -7,7 +7,7 @@ import numpy as onp
 import matplotlib.pyplot as plt
 from jax.config import config
 
-config.update("jax_enable_x64", True)
+# config.update("jax_enable_x64", True)
 
 
 # Set numpy printing format

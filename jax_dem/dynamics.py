@@ -1,7 +1,6 @@
 import jax
 import jax.numpy as np
 import numpy as onp
-from jax import grad, jit, vmap, value_and_grad
 from jax.lib import xla_bridge
 from jax.experimental.ode import odeint
 import time
@@ -17,12 +16,13 @@ from jax_dem.partition import cell_fn, indices_1_to_27, prune_neighbour_list
 env_top = args.env_top
 env_bottom = args.env_bottom
 dim = args.dim
-gravity = args.dim
+# gravity = args.gravity
+gravity = 0.
 
 
 def norm(x):
     '''safe norm to avoid jax.grad yielding np.nan'''
-    x = np.sum(x**2)
+    x = np.sum(x**2, axis=-1)
     safe_x = np.where(x > 0., x, 0.)
     return np.sqrt(safe_x)
 
@@ -34,6 +34,8 @@ def box_env():
 
     def box_velocity(point):
         return np.zeros(dim)
+
+    return box_distance_value, box_velocity
 
 
 def drum_env():
@@ -50,7 +52,9 @@ def drum_env():
     return drum_distance_value, drum_velocity
 
 
-env_distance_value, env_velocity = drum_env()
+# env_distance_value, env_velocity = drum_env()
+env_distance_value, env_velocity = box_env()
+
 
 env_distance_values = jax.vmap(env_distance_value, in_axes=0, out_axes=0)
 env_distance_grad = jax.grad(env_distance_value, argnums=0)
@@ -68,7 +72,8 @@ def compute_sphere_inertia_tensors(radius, n_objects):
 
 
 def get_unit_vectors(vectors):
-    norms = np.sqrt(np.sum(vectors**2, axis=-1))
+    # norms = np.sqrt(np.sum(vectors**2, axis=-1))
+    norms = norm(vectors)
     norms_reg = np.where(norms == 0., 1., norms)
     unit_vectors = vectors / norms_reg[..., None]
     return norms, unit_vectors
@@ -94,18 +99,16 @@ def compute_reactions_helper(Coulomb_fric_coeff,
     tangent_velocity = relative_v - normal_velocity
     friction = 2 * tangent_fric_coeff * reduced_mass[..., None] * tangent_velocity
     friction_norms, friction_unit_vectors = get_unit_vectors(friction)
-    friction_bounds = Coulomb_fric_coeff * np.sqrt(np.sum(elastic_normal_forces**2, axis=-1))
+    friction_bounds = Coulomb_fric_coeff * norm(elastic_normal_forces)
     friction_forces = np.where(friction_norms < friction_bounds, friction_norms, friction_bounds)[..., None] * friction_unit_vectors
 
     _, relative_w_unit_vectors = get_unit_vectors(relative_w)
-    rolling_torque = rolling_fric_coeff * np.linalg.norm(elastic_normal_forces + \
-        damping_forces, axis=-1)[..., None] * reduced_radius[..., None] * relative_w_unit_vectors
+    rolling_torque = rolling_fric_coeff * norm(elastic_normal_forces + damping_forces)[..., None] * reduced_radius[..., None] * relative_w_unit_vectors
 
     forces = elastic_normal_forces + damping_forces + friction_forces
     torques = np.cross(arms, forces) + rolling_torque
 
     return forces, torques
-
 
 
 @jax.jit
@@ -125,6 +128,7 @@ def state_rhs_func(state, t, *args):
     cell_id, indices = cell_fn(x, box_size, minimum_cell_size, cell_capacity)
 
     neighour_indices = tuple(indices_1_to_27(indices))
+
     neighour_ids = cell_id[neighour_indices].reshape(n_objects, -1) # (n_objects, dim**3 * cell_capacity)
 
     neighour_ids = prune_neighbour_list(x, radii, neighour_ids)
@@ -135,17 +139,18 @@ def state_rhs_func(state, t, *args):
     neighour_radii = radii[neighour_ids]
     neighour_vol = vol[neighour_ids]
 
-    Coulomb_fric_coeff = 0.5
-    normal_contact_stiffness = 1e4
-    damping_coeff = 1e1
-    tangent_fric_coeff = 1e1
-    rolling_fric_coeff = 0.2
 
-    # Coulomb_fric_coeff = 0.
+    # Coulomb_fric_coeff = 0.5
     # normal_contact_stiffness = 1e4
-    # damping_coeff = 0.
-    # tangent_fric_coeff = 0.
-    # rolling_fric_coeff = 0.
+    # damping_coeff = 1e1
+    # tangent_fric_coeff = 1e1
+    # rolling_fric_coeff = 0.2
+
+    Coulomb_fric_coeff = 0.
+    normal_contact_stiffness = 1e5
+    damping_coeff = 0.
+    tangent_fric_coeff = 0.
+    rolling_fric_coeff = 0.
 
     mutual_vectors = neighour_x - x[:, None, :]
     mutual_distances,  mutual_unit_vectors = get_unit_vectors(mutual_vectors)
@@ -167,7 +172,6 @@ def state_rhs_func(state, t, *args):
     mutual_torques = np.where(mask, 0., mutual_torques)
 
     mutual_reactions = np.concatenate((np.sum(mutual_forces, axis=1), np.sum(mutual_torques, axis=1)), axis=-1)
-
 
     env_intersected_distances = radii - env_distance_values(x)
     env_unit_vectors = -env_distance_grads(x)
@@ -250,80 +254,6 @@ def initialize_state_many_objects(key):
     return state, radii
 
 
-def odeint_rk4(f, y0, t, *args):
-    def step(state, t):
-        y_prev, t_prev = state
-        h = t - t_prev
-        k1 = h * f(y_prev, t_prev, *args)
-        k2 = h * f(y_prev + k1/2., t_prev + h/2., *args)
-        k3 = h * f(y_prev + k2/2., t_prev + h/2., *args)
-        k4 = h * f(y_prev + k3, t + h, *args)
-        y = y_prev + 1./6 * (k1 + 2 * k2 + 2 * k3 + k4)
-        return (y, t), y
-
-    _, ys = jax.lax.scan(step, (y0, t[0]), t[1:])
-
-
-    # ys = []
-    # state = (y0, t[0])
-    # for time in t[1:]:
-    #     state, y = step(state, time)
-    #     ys.append(y)
-    # ys = np.array(ys)
-
-    return ys
-
-
-# @odeint_rk4.defjvp
-# def odeint_rk4_jvp(f, primals, tangents):
-#   y0, t, *args = primals
-#   delta_y0, _, *delta_args = tangents
-#   nargs = len(args)
-
-#   def f_aug(aug_state, t, *args_and_delta_args):
-#     primal_state, tangent_state = aug_state
-#     args, delta_args = args_and_delta_args[:nargs], args_and_delta_args[nargs:]
-#     primal_dot, tangent_dot = jax.jvp(f, (primal_state, t, *args), (tangent_state, 0., *delta_args))
-#     return np.stack([primal_dot, tangent_dot])
-
-#   aug_init_state = np.stack([y0, delta_y0])
-#   aug_states = odeint_rk4(f_aug, aug_init_state, t, *args, *delta_args)
-#   ys, ys_dot = aug_states[:, 0, :], aug_states[:, 1, :]
-#   return ys, ys_dot
-
-
-# odeint_rk4 = jax.custom_jvp(odeint_rk4, nondiff_argnums=(0,))
-
-
-
-def simulate_odeint(key):
-
-    object_name = 'sparse_perfect_ball'
-    dt = 1e-3
-    ts = np.arange(0., 0.1, dt)
-    y0, radii = initialize_state_many_objects(key)
-
-    # states = odeint_rk4(state_rhs_func, y0, ts, radii)
-
-    def objective(state_rhs_func, y0, ts, radii):
-        states = odeint_rk4(state_rhs_func, y0, ts, radii)
-        return np.sum(states)
-
-    grad_obj = jax.grad(objective, argnums=-1)
-    grads = grad_obj(state_rhs_func, y0, ts, radii)
-    print(gras.shape)
-    # print(gras[])
-
-    exit()
-
-    states = states[::20]
-
-    print(f"Platform: {xla_bridge.get_backend().platform}")
-    np.save(f'data/numpy/vedo/states_{object_name}.npy', states)
-    # plot_energy(energy, f'data/pdf/energy_{object_name}.pdf')
-    vedo_plot(object_name, radii, env_bottom, env_top, states)
-    return states
-
 
 def simulate_scan(key):
     object_name = 'sparse_perfect_ball'
@@ -363,7 +293,7 @@ def simulate_for(key):
     energy = []
     for i in range(num_steps):
         t += dt
-        rhs_func = lambda variable: state_rhs_func(variable, t, radii)
+        rhs_func = lambda variable: jax.jit(state_rhs_func)(variable, t, radii)
         state = runge_kutta_4(state, rhs_func, dt)
         if i % 20 == 0:
             e = compute_energy(radii, state)
