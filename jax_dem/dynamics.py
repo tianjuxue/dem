@@ -1,33 +1,37 @@
 import jax
 import jax.numpy as np
 import numpy as onp
-from jax.lib import xla_bridge
 from jax.experimental.ode import odeint
-import time
 import matplotlib.pyplot as plt
 import vedo
+from functools import partial
 from scipy.spatial.transform import Rotation as R
-from .utils import quats_mul, quat_mul
-from .io import plot_energy, vedo_plot
+from jax_dem.utils import quats_mul, quat_mul
 from jax_dem.arguments import args
 from jax_dem.partition import cell_fn, indices_1_to_27, prune_neighbour_list
-
-
-env_top = args.env_top
-env_bottom = args.env_bottom
+from jax_dem import dataclasses
+ 
 dim = args.dim
-# gravity = args.gravity
-gravity = 0.
 
 
-def norm(x):
-    '''safe norm to avoid jax.grad yielding np.nan'''
-    x = np.sum(x**2, axis=-1)
-    safe_x = np.where(x > 0., x, 0.)
-    return np.sqrt(safe_x)
+@dataclasses.dataclass
+class Parameter:
+    gravity: np.float32 = 9.8
+    radii: np.ndarray = None 
+    normal_contact_stiffness: np.float32 = 1e5
+    damping_coeff: np.float32 = 1e1
+    Coulomb_fric_coeff: np.float32 = 0.5
+    tangent_fric_coeff: np.float32 = 1e1
+    rolling_fric_coeff: np.float32 = 0.2
+    box_env_bottom: np.float32 = None
+    box_env_top: np.float32 = None
+    drum_env_omega: np.ndarray = None
 
 
-def box_env():
+def box_env(parameter):
+    env_bottom = parameter.box_env_bottom
+    env_top = parameter.box_env_top
+
     def box_distance_value(point):
         distances_to_walls = np.concatenate((point - env_bottom, env_top - point))
         return np.min(distances_to_walls)
@@ -38,10 +42,10 @@ def box_env():
     return box_distance_value, box_velocity
 
 
-def drum_env():
+def drum_env(parameter):
     drum_radius = 10.
     drum_center = (env_top + env_bottom) / 2. * np.ones(dim)
-    omega = np.array([4./25.*np.pi, 0., 0.])
+    omega = parameter.drum_env_omega
 
     def drum_distance_value(point):
         return drum_radius - norm(point - drum_center)
@@ -52,16 +56,11 @@ def drum_env():
     return drum_distance_value, drum_velocity
 
 
-# env_distance_value, env_velocity = drum_env()
-env_distance_value, env_velocity = box_env()
-
-
-env_distance_values = jax.vmap(env_distance_value, in_axes=0, out_axes=0)
-env_distance_grad = jax.grad(env_distance_value, argnums=0)
-env_distance_grads = jax.vmap(env_distance_grad, in_axes=0, out_axes=0)
-
-env_velocities = jax.vmap(env_velocity, in_axes=0, out_axes=0)
-
+def norm(x):
+    '''safe norm to avoid jax.grad yielding np.nan'''
+    x = np.sum(x**2, axis=-1)
+    safe_x = np.where(x > 0., x, 0.)
+    return np.sqrt(safe_x)
 
 
 def compute_sphere_inertia_tensors(radius, n_objects):
@@ -111,9 +110,12 @@ def compute_reactions_helper(Coulomb_fric_coeff,
     return forces, torques
 
 
-@jax.jit
-def state_rhs_func(state, t, *args):
-    radii, = args
+# @jax.jit
+@partial(jax.jit, static_argnums=(3,))
+def state_rhs_func_prm(state, t, parameter, env):
+
+    radii = parameter.radii
+
     n_objects = state.shape[1]
     x = state[0:3].T
     q = state[3:7].T
@@ -140,17 +142,11 @@ def state_rhs_func(state, t, *args):
     neighour_vol = vol[neighour_ids]
 
 
-    # Coulomb_fric_coeff = 0.5
-    # normal_contact_stiffness = 1e4
-    # damping_coeff = 1e1
-    # tangent_fric_coeff = 1e1
-    # rolling_fric_coeff = 0.2
-
-    Coulomb_fric_coeff = 0.
-    normal_contact_stiffness = 1e5
-    damping_coeff = 0.
-    tangent_fric_coeff = 0.
-    rolling_fric_coeff = 0.
+    Coulomb_fric_coeff = parameter.Coulomb_fric_coeff
+    normal_contact_stiffness = parameter.normal_contact_stiffness
+    damping_coeff = parameter.damping_coeff
+    tangent_fric_coeff = parameter.tangent_fric_coeff
+    rolling_fric_coeff = parameter.rolling_fric_coeff
 
     mutual_vectors = neighour_x - x[:, None, :]
     mutual_distances,  mutual_unit_vectors = get_unit_vectors(mutual_vectors)
@@ -173,6 +169,13 @@ def state_rhs_func(state, t, *args):
 
     mutual_reactions = np.concatenate((np.sum(mutual_forces, axis=1), np.sum(mutual_torques, axis=1)), axis=-1)
 
+
+    env_distance_value, env_velocity = env(parameter)
+    env_distance_values = jax.vmap(env_distance_value, in_axes=0, out_axes=0)
+    env_distance_grad = jax.grad(env_distance_value, argnums=0)
+    env_distance_grads = jax.vmap(env_distance_grad, in_axes=0, out_axes=0)
+    env_velocities = jax.vmap(env_velocity, in_axes=0, out_axes=0)
+
     env_intersected_distances = radii - env_distance_values(x)
     env_unit_vectors = -env_distance_grads(x)
     env_contac_points = x + (radii - env_intersected_distances / 2.)[:, None] * env_unit_vectors
@@ -193,16 +196,19 @@ def state_rhs_func(state, t, *args):
     w_quat = np.concatenate([np.zeros((1, n_objects)), w.T], axis=0)
     dq_rhs = 0.5 * quats_mul(w_quat.T, q)
     contact_forces = contact_reactions[:, :dim]
-    dv_rhs = (contact_forces / vol[:, None] + np.array([[0., 0., -gravity]]))
+    dv_rhs = (contact_forces / vol[:, None] + np.array([[0., 0., -parameter.gravity]]))
     contact_torques = contact_reactions[:, dim:]
     wIw = np.cross(w, np.squeeze(inertias @  w[..., None]))
     I_inv = np.linalg.inv(inertias) 
     dw_rhs = np.squeeze((I_inv @ (contact_torques - wIw)[..., None]), axis=-1)
     rhs = np.concatenate([dx_rhs, dq_rhs, dv_rhs, dw_rhs], axis=1).T
 
+    particle_out_of_env = env_distance_values(x) < 0
     cell_overflow = np.sum(cell_id != n_objects) != n_objects
+    print(f"particle out of environment? {np.any(particle_out_of_env)}")
     print(f"cell overflow? {cell_overflow}")
-    rhs = np.where(cell_overflow, np.nan, rhs)
+    assert_condition = np.logical_or(particle_out_of_env, cell_overflow)
+    rhs = np.where(assert_condition, np.nan, rhs)
 
     return rhs
 
@@ -230,98 +236,46 @@ def compute_energy(radii, state):
     return total_energy
 
 
-def initialize_state_many_objects(key):
-    radius = 0.5
-
-    # spacing = np.linspace(env_bottom + 0.1*(env_top - env_bottom), env_top - 0.1*(env_top - env_bottom), 10)
-    # n_objects_axis = 10
-    # spacing = np.linspace(env_bottom + 2*radius, env_bottom + (4*n_objects_axis - 2)*radius, n_objects_axis)
-
-    n_objects_axis = 10
-    spacing = np.linspace(44.5, 55, n_objects_axis)
-
-    n_objects = len(spacing)**3
-    x1, x2, x3 = np.meshgrid(*([spacing]*3), indexing='ij')
-    # key = jax.random.PRNGKey(0)
-    perturb = jax.random.uniform(key, (dim, n_objects), np.float32, -0.5*radius, 0.5*radius)
-    xx = np.concatenate([x1.reshape(1, -1), x2.reshape(1, -1), x3.reshape(1, -1)], axis=0)
-    q0 = np.ones((1, n_objects))
-    state = np.concatenate([xx, q0, np.zeros((9, n_objects))], axis=0)
-    radii = radius * np.ones(state.shape[1])
-
-    assert np.all(env_distance_values(xx.T) > 0), "Found particle outside of box!"
-
-    return state, radii
+def get_state_rhs_func(diff_keys, env, nondiff_kwargs):
+    def state_rhs_func(state, t, *diff_args):
+        parameter = Parameter(**nondiff_kwargs)
+        kwargs = dict(zip(diff_keys, diff_args))
+        parameter = dataclasses.replace(parameter, **kwargs)
+        return state_rhs_func_prm(state, t, parameter, env)
+    return state_rhs_func
 
 
-
-def simulate_scan(key):
-    object_name = 'sparse_perfect_ball'
-    y0, radii = initialize_state_many_objects(key)
+# def simulate_for(key):
     
-    dt = 1e-3
-    ts = np.arange(0., 1., dt)
-
-    def scan_fn(state, t):
-        y_prev, t_prev = state
-        rhs_func = lambda variable: state_rhs_func(variable, t_prev, radii) 
-        y = runge_kutta_4(y_prev, rhs_func, dt)
-        return (y, t), y
-
-    _, ys = jax.lax.scan(scan_fn, (y0, ts[0]), ts[1:])
-
-    # print(f"Platform: {xla_bridge.get_backend().platform}")
-    # np.save(f'data/numpy/vedo/states_{object_name}.npy', ys)
-    # plot_energy(energy, f'data/pdf/energy_{object_name}.pdf')
-    # vedo_plot(object_name, radii, env_bottom, env_top,, ys)
-    return ys
+#     state, radii = initialize_state_many_objects(key)
 
 
-def simulate_for(key):
-    object_name = 'sparse_perfect_ball'
-    state, radii = initialize_state_many_objects(key)
+#     num_steps = 5000
+#     # dt = 1e-3
+#     dt = 5*1e-3
 
-    vedo_plot(object_name, radii, 40, 60)
-    exit()
+#     t = 0.
+#     states = [state]
+#     energy = []
+#     for i in range(num_steps):
+#         t += dt
+#         rhs_func = lambda variable: jax.jit(state_rhs_func)(variable, t, radii)
+#         state = runge_kutta_4(state, rhs_func, dt)
+#         if i % 20 == 0:
+#             e = compute_energy(radii, state)
+#             print(f"\nstep {i}, total energy={e}, quaternion square sum: {np.sum(state[3:7]**2)}")
+#             # print(f"state=\n{state}")
+#             if np.any(np.isnan(state)):
+#                 print(f"state=\n{state}")
+#                 break
+#             energy.append(e)
+#             states.append(state)
 
-    num_steps = 5000
-    # dt = 1e-3
-    dt = 5*1e-3
-
-    t = 0.
-    states = [state]
-    energy = []
-    for i in range(num_steps):
-        t += dt
-        rhs_func = lambda variable: jax.jit(state_rhs_func)(variable, t, radii)
-        state = runge_kutta_4(state, rhs_func, dt)
-        if i % 20 == 0:
-            e = compute_energy(radii, state)
-            print(f"\nstep {i}, total energy={e}, quaternion square sum: {np.sum(state[3:7]**2)}")
-            # print(f"state=\n{state}")
-            if np.any(np.isnan(state)):
-                print(f"state=\n{state}")
-                break
-            energy.append(e)
-            states.append(state)
-
-    states = np.array(states)
-    energy = np.array(energy)
-
-    print(f"Platform: {xla_bridge.get_backend().platform}")
-    np.save(f'data/numpy/vedo/states_{object_name}.npy', states)
-    plot_energy(energy, f'data/pdf/energy_{object_name}.pdf')
-    vedo_plot(object_name, radii, 40, 60, states)
-    return states
+#     states = np.array(states)
+#     energy = np.array(energy)
 
 
-def run():
-    start_time = time.time()
-    key = jax.random.PRNGKey(0)
-    ys = simulate_for(key)
-    end_time = time.time()
-    print(f"Time elapsed {end_time-start_time}")   
-    
+#     return states
 
-if __name__ == '__main__':
-    run()
+
+ 

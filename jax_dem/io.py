@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import vedo
 from jax_dem.utils import get_rot_mats
 
+
 def plot_energy(energy, file_path):
     plt.figure(num=10, figsize=(6, 6))
     plt.plot(20*np.arange(1, len(energy) + 1, 1), energy, marker='o',  markersize=2, linestyle="-", linewidth=1, color='blue')
@@ -28,9 +29,18 @@ def vedo_plot(object_name, radius, bottom, top, states=None):
 
     world = vedo.Box(size=[bottom, top, bottom, top, bottom, top]).wireframe()
  
+
+    # world = vedo.Box(size=[40, 60, 40, 60, 10, 20]).wireframe()
+ 
+
     # vedo.show(world, axes=4, viewup="z", interactive=0)
 
-    vedo.show(world, axes=4, camera={'pos':[100, 50, 50], 'viewup':[0, 0, 1]}, interactive=0)
+    vedo.show(world, axes=4, camera={'pos':[50, 50, 60], 'viewup':[0, 1, 0]}, interactive=0)
+    # vedo.show(world, axes=4, camera={'pos':[45, 45, 100], 'viewup':[1, 1, 1]}, interactive=0)
+
+
+
+    # vedo.show(world, axes=4, camera={'pos':[100, 50, 50], 'viewup':[0, 0, 1]}, interactive=0)
 
     vd = vedo.Video(f"data/mp4/3d/{object_name}.mp4", fps=30)
     # Modify vd.options so that preview on Mac OS is enabled
