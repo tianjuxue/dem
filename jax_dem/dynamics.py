@@ -18,7 +18,7 @@ dim = args.dim
 class Parameter:
     gravity: np.float32 = 9.8
     radii: np.ndarray = None 
-    normal_contact_stiffness: np.float32 = 1e5
+    normal_contact_stiffness: np.float32 = 1e4
     damping_coeff: np.float32 = 1e1
     Coulomb_fric_coeff: np.float32 = 0.5
     tangent_fric_coeff: np.float32 = 1e1
@@ -44,6 +44,8 @@ def box_env(parameter):
 
 def drum_env(parameter):
     drum_radius = 10.
+    env_bottom = parameter.box_env_bottom
+    env_top = parameter.box_env_top    
     drum_center = (env_top + env_bottom) / 2. * np.ones(dim)
     omega = parameter.drum_env_omega
 
@@ -111,7 +113,7 @@ def compute_reactions_helper(Coulomb_fric_coeff,
 
 
 # @jax.jit
-@partial(jax.jit, static_argnums=(3,))
+# @partial(jax.jit, static_argnums=(3,))
 def state_rhs_func_prm(state, t, parameter, env):
 
     radii = parameter.radii
@@ -205,23 +207,12 @@ def state_rhs_func_prm(state, t, parameter, env):
 
     particle_out_of_env = env_distance_values(x) < 0
     cell_overflow = np.sum(cell_id != n_objects) != n_objects
-    print(f"particle out of environment? {np.any(particle_out_of_env)}")
-    print(f"cell overflow? {cell_overflow}")
+    # print(f"particle out of environment? {np.any(particle_out_of_env)}")
+    # print(f"cell overflow? {np.sum(cell_id != n_objects)}")
     assert_condition = np.logical_or(particle_out_of_env, cell_overflow)
     rhs = np.where(assert_condition, np.nan, rhs)
-
+   
     return rhs
-
-
-def runge_kutta_4(variable, rhs, dt):
-    y_0 = variable
-    k_0 = rhs(y_0)
-    k_1 = rhs(y_0 + dt/2 * k_0)
-    k_2 = rhs(y_0 + dt/2 * k_1)
-    k_3 = rhs(y_0 + dt * k_2)
-    k = 1./6. * (k_0 + 2. * k_1 + 2. * k_2 + k_3)
-    y_1 = y_0 + dt * k
-    return y_1
 
 
 @jax.jit
@@ -242,7 +233,18 @@ def get_state_rhs_func(diff_keys, env, nondiff_kwargs):
         kwargs = dict(zip(diff_keys, diff_args))
         parameter = dataclasses.replace(parameter, **kwargs)
         return state_rhs_func_prm(state, t, parameter, env)
-    return state_rhs_func
+    return jax.jit(state_rhs_func)
+
+
+# def runge_kutta_4(variable, rhs, dt):
+#     y_0 = variable
+#     k_0 = rhs(y_0)
+#     k_1 = rhs(y_0 + dt/2 * k_0)
+#     k_2 = rhs(y_0 + dt/2 * k_1)
+#     k_3 = rhs(y_0 + dt * k_2)
+#     k = 1./6. * (k_0 + 2. * k_1 + 2. * k_2 + k_3)
+#     y_1 = y_0 + dt * k
+#     return y_1
 
 
 # def simulate_for(key):

@@ -16,6 +16,9 @@ onp.set_printoptions(precision=10)
 onp.random.seed(0)
 
 
+np.set_printoptions(threshold=sys.maxsize, linewidth=1000, suppress=True)
+np.set_printoptions(precision=3)
+
 # Manage arguments
 parser = argparse.ArgumentParser()
 parser.add_argument('--verbose', help='Verbose for debug', action='store_true', default=True)

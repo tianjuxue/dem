@@ -14,9 +14,9 @@ def plot_energy(energy, file_path):
     plt.savefig(file_path)
 
 
-def vedo_plot(object_name, radius, bottom, top, states=None):
+def vedo_plot(case_name, radius, bottom, top, states=None):
     if states is None:
-        states = np.load(f'data/numpy/vedo/states_{object_name}.npy')
+        states = np.load(f'data/numpy/vedo/states_{case_name}.npy')
  
     n_objects = states.shape[-1]
 
@@ -27,22 +27,19 @@ def vedo_plot(object_name, radius, bottom, top, states=None):
 
     assert(radius.shape == (n_objects,))
 
-    world = vedo.Box(size=[bottom, top, bottom, top, bottom, top]).wireframe()
- 
-
-    # world = vedo.Box(size=[40, 60, 40, 60, 10, 20]).wireframe()
- 
+    # This prob should be changed...
+    if case_name == 'particles_in_drum':
+        world = vedo.Box(size=[bottom, top, bottom, top, bottom, top]).wireframe()
+        vedo.show(world, axes=4, camera={'pos':[100, 50, 50], 'viewup':[0, 0, 1]}, interactive=0)
+    elif case_name == 'billiards':
+        world = vedo.Box(size=[40, 60, 40, 60, 10, 20]).wireframe()
+        vedo.show(world, axes=4, camera={'pos':[50, 50, 60], 'viewup':[0, 1, 0]}, interactive=0)
+    else:
+        raise ValueError()
 
     # vedo.show(world, axes=4, viewup="z", interactive=0)
 
-    vedo.show(world, axes=4, camera={'pos':[50, 50, 60], 'viewup':[0, 1, 0]}, interactive=0)
-    # vedo.show(world, axes=4, camera={'pos':[45, 45, 100], 'viewup':[1, 1, 1]}, interactive=0)
-
-
-
-    # vedo.show(world, axes=4, camera={'pos':[100, 50, 50], 'viewup':[0, 0, 1]}, interactive=0)
-
-    vd = vedo.Video(f"data/mp4/3d/{object_name}.mp4", fps=30)
+    vd = vedo.Video(f"data/mp4/3d/{case_name}.mp4", fps=30)
     # Modify vd.options so that preview on Mac OS is enabled
     # https://apple.stackexchange.com/questions/166553/why-wont-video-from-ffmpeg-show-in-quicktime-imovie-or-quick-preview
     vd.options = "-b:v 8000k -pix_fmt yuv420p"

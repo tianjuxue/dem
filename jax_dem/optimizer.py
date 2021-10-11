@@ -7,6 +7,7 @@ from functools import partial
 from jax.tree_util import tree_map
 from jax_dem.io import vedo_plot
 import scipy.optimize as opt
+import matplotlib.pyplot as plt
 
 
 def ravel_first_arg(f, unravel):
@@ -30,15 +31,23 @@ def odeint(func, y0, ts, *diff_args):
 
 
 def rk4(f, y0, ts, *diff_args):
+
     def step(state, t_crt):
         y_prev, t_prev = state
         h = t_crt - t_prev
         k1 = h * f(y_prev, t_prev, *diff_args)
         k2 = h * f(y_prev + k1/2., t_prev + h/2., *diff_args)
         k3 = h * f(y_prev + k2/2., t_prev + h/2., *diff_args)
-        k4 = h * f(y_prev + k3, t_crt + h, *diff_args)
+        k4 = h * f(y_prev + k3, t_prev + h, *diff_args)
         y = y_prev + 1./6 * (k1 + 2 * k2 + 2 * k3 + k4)
         return (y, t_crt), y
+
+    # def step(state, t_crt):
+    #     y_prev, t_prev = state
+    #     h = t_crt - t_prev
+    #     y = y_prev + h * f(y_prev, t_prev, *diff_args)
+    #     return (y, t_crt), y
+
 
     # _, ys = jax.lax.scan(step, (y0, ts[0]), ts[1:])
 
@@ -52,9 +61,10 @@ def rk4(f, y0, ts, *diff_args):
             # e = compute_energy(radii, y)
             # print(f"\nstep {i}, total energy={e}, quaternion square sum: {np.sum(y[3:7]**2)}")
             print(f"step {i}")
-            if np.any(np.isnan(state[0])):
-                print(f"Found np.nan, so break")                
-                break
+            if not np.all(np.isfinite(y)):
+                print(f"Found np.inf or np.nan in y - stop the program")  
+                # print(y)              
+                exit()
         ys.append(y)
             # energy.append(e)
     # energy = np.array(energy)
@@ -63,59 +73,88 @@ def rk4(f, y0, ts, *diff_args):
     return ys
 
 
-def get_aug_rhs_func(state_rhs_func, ys, ts):
-
-    # Assumption: Uniform time step
-
-    def aug_rhs_func(aug, t, *diff_args):
+def get_aug_rhs_func(state_rhs_func):
+    def aug_rhs_func(aug, neg_t, *aug_args):
         y, y_bar, diff_args_bar = aug
-        y_dot, vjpfun = jax.vjp(lambda y, *diff_args: state_rhs_func(y, -t, *diff_args), y, *diff_args)
+
+        (ys, ts), diff_args = aug_args
+
+        # Assumption: Uniform time step
+        dt = ts[1] - ts[0]
+        ts = np.hstack((ts, ts[-1] + dt))
+        ys = np.vstack((ys, ys[-1:, ...]))
+
+        assert len(ts) == len(ys), f"ts.shape = {ts.shape}, ys.shape = {ys.shape}"
+
+        t = -neg_t
+        left_index = np.array((t - ts[0]) / dt, dtype=np.int32)
+        right_index = left_index + 1
+        y_lerp = (ys[left_index] * (ts[right_index] - t) + ys[right_index] * (t - ts[left_index])) / dt
+
+        # print(f"left_index = {left_index}, right_index = {right_index}, t = {t}")
+        # print(f"y_lerp=\n{y_lerp}")
+
+        y_dot, vjpfun = jax.vjp(lambda y, *diff_args: state_rhs_func(y, -neg_t, *diff_args), y_lerp, *diff_args)
         return (-y_dot, *vjpfun(y_bar))
+
     return jax.jit(aug_rhs_func)
 
 
 def optimize(initials, ts, obj_func, state_rhs_func, bounds=None):
     x_ini, unravel = ravel_pytree(initials)
     aug_rhs_func = get_aug_rhs_func(state_rhs_func)
+
     def objective(x):
-        print(f"Evaluating objective value...")
+        print(f"\n######################### Evaluating objective value - step {objective.counter}")
         y0, diff_args = unravel(x)
         ys = odeint(state_rhs_func, y0, ts, *diff_args)
         obj_val = obj_func(ys[-1])
         objective.aug0 = (ys[-1], jax.grad(obj_func)(ys[-1]), tree_map(np.zeros_like, diff_args))
         objective.diff_args = diff_args
+        objective.ys = np.vstack((y0[None, ...], ys))
+        objective.counter += 1
         print(f"y0 = \n{y0}")
-        print(f"yf = \n{ys[-1]}")
+        # print(f"yf = \n{ys[-1]}")
         # print(f"ys = {ys[:, 2, 0]}")
         print(f"obj_val = {obj_val}")
+        # print(f"diff_args = {diff_args[0]}")
         return obj_val
 
     def derivative(x):
         diff_args = objective.diff_args
         aug0 = objective.aug0  
-        ys, ys_bar, diff_args_bar = odeint(aug_rhs_func, aug0, -ts[::-1], *diff_args)
+        ys = objective.ys
+        
+        aug_args = ((ys, ts), diff_args)
 
-        print(f"der = \n{ys_bar[-1]}")
-        print(ys[-1])
-
+        ys_bwd, ys_bar, diff_args_bar = odeint(aug_rhs_func, aug0, -ts[::-1], *aug_args)
         der_val, _ = ravel_pytree(tree_map(lambda x: x[-1], [ys_bar, diff_args_bar]))
 
-        exit()
+        # fig = plt.figure()
+        # plt.plot(ts[-2::-1], ys_bar[:, 0, 0], linestyle='-', marker='o', color='red')
+        # plt.show()
 
+        # print(f"ys_bwd[-1] = \n{ys_bwd[-1]}")
+        print(f"der_y0 = \n{ys_bar[-1]}")
+        # print(f"der_diff_args = \n{diff_args_bar[0][-1]}")
         # print(f"der = {der_val}")
+    
+        # exit()
 
-        # der_val, _ = ravel_pytree([ys_bar[-1], diff_args_bar[0][-1]])
-        # der_val = jax.ops.index_update(der_val, -1, 0.)
-        # der_val = jax.ops.index_update(der_val, -5, 0.)
-        
         # 'L-BFGS-B' requires the following conversion, otherwise we get an error message saying
         # -- input not fortran contiguous -- expected elsize=8 but got 4
         return onp.array(der_val, order='F', dtype=onp.float64)
 
-    options = {'maxiter': 100, 'disp': True}  # CG or L-BFGS-B or Newton-CG
+    # x = x_ini
+    # for i in range(10000):
+    #     objective(x)
+    #     x = x - 5*1e-4*derivative(x)
+
+    objective.counter = 0
+    options = {'maxiter': 1000, 'disp': True}  # CG or L-BFGS-B or Newton-CG or SLSQP
     res = opt.minimize(fun=objective,
                        x0=x_ini,
-                       method='L-BFGS-B',
+                       method='SLSQP',
                        jac=derivative,
                        bounds=bounds,
                        callback=None,
