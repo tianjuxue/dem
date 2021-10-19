@@ -142,7 +142,7 @@ def indices_1_to_27(indices):
 
 
 def prune_neighbour_list(x, radii, neighour_ids):
-    occupancy = 10
+    n_occupancy = 10
     n_objects = x.shape[0]
     neighour_x = x[neighour_ids]
     neighour_radii = radii[neighour_ids]
@@ -156,4 +156,4 @@ def prune_neighbour_list(x, radii, neighour_ids):
     p_index = np.arange(neighour_ids.shape[0])[:, None]
     out_idx = jax.ops.index_update(out_idx, jax.ops.index[p_index, index], neighour_ids)
 
-    return out_idx[:, :occupancy]
+    return out_idx[:, :n_occupancy]

@@ -18,7 +18,7 @@ def vedo_plot(case_name, radius, bottom, top, states=None):
     if states is None:
         states = np.load(f'data/numpy/vedo/states_{case_name}.npy')
  
-    n_objects = states.shape[-1]
+    n_objects = states.shape[1]
 
     if hasattr(radius, "__len__"):
         radius = radius.reshape(-1)
@@ -28,16 +28,17 @@ def vedo_plot(case_name, radius, bottom, top, states=None):
     assert(radius.shape == (n_objects,))
 
     # This prob should be changed...
-    if case_name == 'particles_in_drum':
+    if case_name == 'particles_in_drum' or case_name == 'objects_in_drum':
         world = vedo.Box(size=[bottom, top, bottom, top, bottom, top]).wireframe()
         vedo.show(world, axes=4, camera={'pos':[100, 50, 50], 'viewup':[0, 0, 1]}, interactive=0)
     elif case_name == 'billiards':
         world = vedo.Box(size=[40, 60, 40, 60, 10, 20]).wireframe()
         vedo.show(world, axes=4, camera={'pos':[50, 50, 60], 'viewup':[0, 1, 0]}, interactive=0)
+    elif case_name == 'donuts':
+        world = vedo.Box(size=[bottom, top, bottom, top, bottom, top]).wireframe()
+        vedo.show(world, axes=4, viewup="z", interactive=0)
     else:
         raise ValueError()
-
-    # vedo.show(world, axes=4, viewup="z", interactive=0)
 
     vd = vedo.Video(f"data/mp4/3d/{case_name}.mp4", fps=30)
     # Modify vd.options so that preview on Mac OS is enabled
@@ -45,8 +46,8 @@ def vedo_plot(case_name, radius, bottom, top, states=None):
     vd.options = "-b:v 8000k -pix_fmt yuv420p"
 
     for s in range(len(states)):
-        x = states[s][0:3].T
-        q = states[s][3:7].T
+        x = states[s][:, 0:3]
+        q = states[s][:, 3:7]
         initial_arrow = radius.reshape(-1, 1) * np.array([[0., 0., 1]])
         rot_matrices = get_rot_mats(q)
         endPoints = np.squeeze(rot_matrices @ initial_arrow[..., None], axis=-1) + x

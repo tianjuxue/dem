@@ -57,6 +57,7 @@ def rk4(f, y0, ts, *diff_args):
     for (i, t_crt) in enumerate(ts[1:]):
         state, y = step(state, t_crt)
         # ys.append(y)
+        # print("break")
         if i % 20 == 0:
             # e = compute_energy(radii, y)
             # print(f"\nstep {i}, total energy={e}, quaternion square sum: {np.sum(y[3:7]**2)}")
@@ -104,6 +105,8 @@ def optimize(initials, ts, obj_func, state_rhs_func, bounds=None):
     x_ini, unravel = ravel_pytree(initials)
     aug_rhs_func = get_aug_rhs_func(state_rhs_func)
 
+    obj_vals = []
+
     def objective(x):
         print(f"\n######################### Evaluating objective value - step {objective.counter}")
         y0, diff_args = unravel(x)
@@ -113,11 +116,13 @@ def optimize(initials, ts, obj_func, state_rhs_func, bounds=None):
         objective.diff_args = diff_args
         objective.ys = np.vstack((y0[None, ...], ys))
         objective.counter += 1
-        print(f"y0 = \n{y0}")
+        objective.x = [y0, diff_args]
+        # print(f"y0 = \n{y0}")
         # print(f"yf = \n{ys[-1]}")
         # print(f"ys = {ys[:, 2, 0]}")
         print(f"obj_val = {obj_val}")
         # print(f"diff_args = {diff_args[0]}")
+        obj_vals.append(obj_val)
         return obj_val
 
     def derivative(x):
@@ -135,11 +140,12 @@ def optimize(initials, ts, obj_func, state_rhs_func, bounds=None):
         # plt.show()
 
         # print(f"ys_bwd[-1] = \n{ys_bwd[-1]}")
-        print(f"der_y0 = \n{ys_bar[-1]}")
+        # print(f"der_y0 = \n{ys_bar[-1]}")
         # print(f"der_diff_args = \n{diff_args_bar[0][-1]}")
+        print(f"der_diff_args = \n{diff_args_bar}")
         # print(f"der = {der_val}")
     
-        # exit()
+        exit()
 
         # 'L-BFGS-B' requires the following conversion, otherwise we get an error message saying
         # -- input not fortran contiguous -- expected elsize=8 but got 4
@@ -159,6 +165,15 @@ def optimize(initials, ts, obj_func, state_rhs_func, bounds=None):
                        bounds=bounds,
                        callback=None,
                        options=options)
+
+    return objective.x
+
+    # print(obj_vals) 
+    # fig = plt.figure()
+    # plt.plot(np.arange(len(obj_vals)), obj_vals, linestyle='-', marker='o', color='black')
+    # plt.xlabel(r"Optimization step")
+    # plt.ylabel(r"$J$")
+    # plt.show()
 
 
 def simulate(initials, ts, state_rhs_func):
