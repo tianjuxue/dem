@@ -8,7 +8,7 @@ from jax_dem.utils import get_rot_mats
 
 def plot_energy(energy, file_path):
     plt.figure(num=10, figsize=(6, 6))
-    plt.plot(20*np.arange(1, len(energy) + 1, 1), energy, marker='o',  markersize=2, linestyle="-", linewidth=1, color='blue')
+    plt.plot(np.arange(1, len(energy) + 1, 1), energy, marker='o',  markersize=2, linestyle="-", linewidth=1, color='blue')
     plt.xlabel("Time steps")
     plt.ylabel("Energy")
     plt.savefig(file_path)

@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import vedo
 from functools import partial
 from scipy.spatial.transform import Rotation as R
-from jax_dem.utils import quats_mul, quat_mul, rotate_vector, rotate_vector_batch
+from jax_dem.utils import quats_mul, quat_mul, rotate_vector, rotate_vector_batch, get_unit_vectors, norm
 from jax_dem.arguments import args
 from jax_dem.partition import cell_fn, indices_1_to_27, prune_neighbour_list
 from jax_dem import dataclasses
@@ -63,26 +63,11 @@ def drum_env(parameter):
     return drum_distance_value, drum_velocity
 
 
-def norm(x):
-    '''safe norm to avoid jax.grad yielding np.nan'''
-    x = np.sum(x**2, axis=-1)
-    safe_x = np.where(x > 0., x, 0.)
-    return np.sqrt(safe_x)
-
-
 def compute_sphere_inertia_tensors(radii):
     vols = 4./3.*np.pi*radii**3
     inertias = 2./5.*vols*radii**2
     inertias = inertias[:, None, None] * np.eye(dim)[None, :, :]
     return inertias, vols
-
-
-def get_unit_vectors(vectors):
-    # norms = np.sqrt(np.sum(vectors**2, axis=-1))
-    norms = norm(vectors)
-    norms_reg = np.where(norms == 0., 1., norms)
-    unit_vectors = vectors / norms_reg[..., None]
-    return norms, unit_vectors
 
 
 
@@ -466,16 +451,37 @@ def obj_state_rhs_func_prm_uniform(state, t, parameter, env):
     return rhs
 
 
-@jax.jit
-def compute_energy(radii, state):
-    x = state[0:3].T
-    q = state[3:7].T
-    v = state[7:10].T
-    w = state[10:13].T
-    inertias, vol = compute_sphere_inertia_tensors(radii)
+def obj_states_to_ptcl_states(obj_ys, ptcl_arm_ref_arr):
+    '''
+    obj_ys: (n_steps, n_obj, 13)
+    states: (n_steps, n_obj*n_ptcl_per_obj, 13)
+    '''
+    n_steps = obj_ys.shape[0]
+    ptcl_xs = obj_ys[:, :, 0:3]
+    ptcl_qs = obj_ys[:, :, 3:7]
+    ptcl_vs = obj_ys[:, :, 7:10]
+    ptcl_ws = obj_ys[:, :, 10:13]
+    ptcl_x_arrs, ptcl_q_arrs, ptcl_v_arrs, ptcl_w_arrs = obj_to_ptcl_uniform_batch(ptcl_xs, ptcl_qs, ptcl_vs, ptcl_ws, ptcl_arm_ref_arr)
+    ptcl_ys = np.concatenate((ptcl_x_arrs, ptcl_q_arrs, ptcl_v_arrs, ptcl_w_arrs), axis=-1).reshape(n_steps, -1, 13)
+    return ptcl_ys
+
+
+def compute_energy(state, inertias, vols):
+    x = state[:, 0:3]
+    q = state[:, 3:7]
+    v = state[:, 7:10]
+    w = state[:, 10:13]
     total_energy = 1./2. * np.sum(w * np.squeeze(inertias @ w[:, :, None])) + \
-     np.sum(1./2. * vol * np.sum(v**2, axis=-1) + gravity * vol * x[:, 2])
+     np.sum(1./2. * vols * np.sum(v**2, axis=-1) + 9.8 * vols * x[:, 2])
     return total_energy
+
+compute_energy_batch = jax.jit(jax.vmap(compute_energy, in_axes=(0, None, None), out_axes=0))
+
+
+def test_energy(states, radii):
+    inertias, vols = compute_sphere_inertia_tensors(radii)
+    energy = compute_energy_batch(states, inertias, vols)
+    return energy
 
 
 def get_state_rhs_func(state_rhs_func_prm, diff_keys, env, nondiff_kwargs):

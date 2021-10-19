@@ -7,14 +7,11 @@ import time
 from jax_dem.optimizer import optimize, simulate
 from jax_dem.arguments import args
 from jax_dem.dynamics import get_state_rhs_func, drum_env, box_env, drum_env, ptcl_state_rhs_func_prm, \
-obj_state_rhs_func_prm_nonuniform, obj_state_rhs_func_prm_uniform, obj_to_ptcl_uniform_batch
-from jax_dem.io import plot_energy, vedo_plot
+obj_state_rhs_func_prm_nonuniform, obj_state_rhs_func_prm_uniform, obj_to_ptcl_uniform_batch, test_energy, obj_states_to_ptcl_states
+from jax_dem.io import vedo_plot, plot_energy
 import matplotlib.pyplot as plt
 
 dim = args.dim
-
-
-# TODO: transpose all states
 
 def walltime(func):
     def wrapper():
@@ -214,6 +211,7 @@ def particles_in_box():
     # vedo_plot(case_name, diff_kwargs['radii'], env_bottom, env_top, states=None)
 
 
+@walltime
 def particles_in_drum():
     case_name = 'particles_in_drum'
     radius = 0.5
@@ -278,6 +276,7 @@ def particles_in_drum():
     inv_opt()
 
 
+@walltime
 def objects_in_drum():
     case_name = 'objects_in_drum'
 
@@ -316,26 +315,34 @@ def objects_in_drum():
         ts = np.arange(0., dt*4001, dt)
         diff_kwargs = {'drum_env_omega': np.array([15./25.*np.pi, 0., 0.])}
         state_rhs_func = get_state_rhs_func(obj_state_rhs_func_prm_uniform, tuple(diff_kwargs.keys()), drum_env, nondiff_kwargs)
-        ys = simulate([y0, tuple(diff_kwargs.values())], ts, state_rhs_func)
 
-        ptcl_x_arrs, ptcl_q_arrs, _, _ = obj_to_ptcl_uniform_batch(ys[:, :, 0:3], ys[:, :, 3:7], ys[:, :, 7:10], ys[:, :, 10:13], nondiff_kwargs['ptcl_arm_ref_arr'])
-        states_plt = np.concatenate((ptcl_x_arrs.reshape(ys.shape[0], -1, dim), ptcl_q_arrs.reshape(ys.shape[0], -1, dim + 1)), axis=-1)[::20]
-        np.save(f'data/numpy/vedo/states_{case_name}.npy', states_plt)
-        vedo_plot(case_name, radius, env_bottom, env_top, states_plt)
-
+        obj_ys = simulate([y0, tuple(diff_kwargs.values())], ts, state_rhs_func)
+        np.save(f'data/numpy/vedo/states_{case_name}.npy', obj_ys[::20])
+        obj_ys = np.load(f'data/numpy/vedo/states_{case_name}.npy')
+        ptcl_ys = obj_states_to_ptcl_states(obj_ys, nondiff_kwargs['ptcl_arm_ref_arr'])
+        vedo_plot(case_name, radius, env_bottom, env_top, ptcl_ys[::20])
 
     fwd_sim()
 
 
+@walltime
 def donuts():
     case_name = 'donuts'
 
     radius = 0.5
-    n_objects_axis = 10
+
+    # n_objects_axis = 10
+    n_objects_axis = 2
+
     n_ptcl_per_obj = 20
     donut_radius = n_ptcl_per_obj * 4./3. * np.pi * radius**3 / (np.pi * radius**2 * 2 * np.pi)
     outer_diamter = 2 * (donut_radius + radius)
-    spacing = np.linspace(50 - 5 * outer_diamter, 50 + 5 * outer_diamter, n_objects_axis)
+
+    # spacing = np.linspace(50 - 5 * outer_diamter, 50 + 5 * outer_diamter, n_objects_axis)
+    # spacing = np.linspace(25 - 2.1 * outer_diamter, 25 + 2.1 * outer_diamter, n_objects_axis)
+    spacing = np.linspace(22 - 1 * outer_diamter, 22 + 1 * outer_diamter, n_objects_axis)
+
+
     n_objects = len(spacing)**3 
     angles = np.arange(0, 2 * np.pi, 2 * np.pi / n_ptcl_per_obj)
     ptcl_arm_ref_each = np.vstack((donut_radius * np.cos(angles), donut_radius * np.sin(angles), np.zeros(n_ptcl_per_obj))).T
@@ -349,10 +356,16 @@ def donuts():
     y0 = np.hstack((x0, q0, np.zeros((n_objects, 6))))
 
     nondiff_kwargs = {'normal_contact_stiffness': 1e4,
-                      'damping_coeff': 1e1,
-                      'Coulomb_fric_coeff': 0.5,
-                      'tangent_fric_coeff': 1e1,
-                      'rolling_fric_coeff': 0.2,
+                      # 'damping_coeff': 1e1,
+                      # 'Coulomb_fric_coeff': 0.5,
+                      # 'tangent_fric_coeff': 1e1,
+                      # 'rolling_fric_coeff': 0.2,
+
+                      'damping_coeff': 0.,
+                      'Coulomb_fric_coeff': 0.,
+                      'tangent_fric_coeff': 0.,
+                      'rolling_fric_coeff': 0.,
+
                       'box_env_bottom': 10., 
                       'box_env_top': 90.,
                       'ptcl_arm_ref_arr': np.stack(ptcl_arm_ref),
@@ -361,18 +374,24 @@ def donuts():
     env_bottom = nondiff_kwargs['box_env_bottom']
     env_top = nondiff_kwargs['box_env_top']
 
+
     def fwd_sim():
-        dt = 2*1e-3
+        dt = 2 * 1e-3
         ts = np.arange(0., dt*2001, dt)
         diff_kwargs = {'drum_env_omega': np.array([15./25.*np.pi, 0., 0.])}
         state_rhs_func = get_state_rhs_func(obj_state_rhs_func_prm_uniform, tuple(diff_kwargs.keys()), box_env, nondiff_kwargs)
-        ys = simulate([y0, tuple(diff_kwargs.values())], ts, state_rhs_func)
 
-        ptcl_x_arrs, ptcl_q_arrs, _, _ = obj_to_ptcl_uniform_batch(ys[:, :, 0:3], ys[:, :, 3:7], ys[:, :, 7:10], ys[:, :, 10:13], nondiff_kwargs['ptcl_arm_ref_arr'])
-        states_plt = np.concatenate((ptcl_x_arrs.reshape(ys.shape[0], -1, dim), ptcl_q_arrs.reshape(ys.shape[0], -1, dim + 1)), axis=-1)[::20]
-        np.save(f'data/numpy/vedo/states_{case_name}.npy', states_plt)
-        vedo_plot(case_name, radius, env_bottom, env_top)
+        obj_ys = simulate([y0, tuple(diff_kwargs.values())], ts, state_rhs_func)
+        obj_ys_skip = obj_ys[::20]
+        np.save(f'data/numpy/vedo/states_{case_name}.npy', obj_ys_skip)
 
+        # obj_ys_skip = np.load(f'data/numpy/vedo/states_{case_name}.npy')
+
+        ptcl_ys_skip = obj_states_to_ptcl_states(obj_ys_skip, nondiff_kwargs['ptcl_arm_ref_arr'])
+
+        energy = test_energy(ptcl_ys_skip, nondiff_kwargs['radii_arr'].reshape(-1))
+        plot_energy(energy, f'data/pdf/energy_{case_name}.pdf')
+        vedo_plot(case_name, radius, env_bottom, env_top, ptcl_ys_skip)
 
     fwd_sim()
 
@@ -382,4 +401,4 @@ if __name__ == '__main__':
     # particles_in_drum()
     # objects_in_drum()
     donuts()
-
+    plt.show()

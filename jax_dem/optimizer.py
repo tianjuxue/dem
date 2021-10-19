@@ -6,6 +6,7 @@ from jax.flatten_util import ravel_pytree
 from functools import partial
 from jax.tree_util import tree_map
 from jax_dem.io import vedo_plot
+from jax_dem.utils import get_unit_vectors, quats_mul
 import scipy.optimize as opt
 import matplotlib.pyplot as plt
 
@@ -23,54 +24,87 @@ def ravel_first_arg_(unravel, y_flat, *diff_args):
 
 
 # @partial(jax.jit, static_argnums=(0,))
-def odeint(func, y0, ts, *diff_args):
+def odeint(stepper, f, y0, ts, *diff_args):
     y0, unravel = ravel_pytree(y0)
-    func = ravel_first_arg(func, unravel)
-    out = rk4(func, y0, ts, *diff_args)
+    f = ravel_first_arg(f, unravel)
+    out = odeint_helper(stepper, f, y0, ts, *diff_args)
     return jax.vmap(unravel)(out)
 
 
-def rk4(f, y0, ts, *diff_args):
-
-    def step(state, t_crt):
-        y_prev, t_prev = state
-        h = t_crt - t_prev
-        k1 = h * f(y_prev, t_prev, *diff_args)
-        k2 = h * f(y_prev + k1/2., t_prev + h/2., *diff_args)
-        k3 = h * f(y_prev + k2/2., t_prev + h/2., *diff_args)
-        k4 = h * f(y_prev + k3, t_prev + h, *diff_args)
-        y = y_prev + 1./6 * (k1 + 2 * k2 + 2 * k3 + k4)
-        return (y, t_crt), y
-
-    # def step(state, t_crt):
-    #     y_prev, t_prev = state
-    #     h = t_crt - t_prev
-    #     y = y_prev + h * f(y_prev, t_prev, *diff_args)
-    #     return (y, t_crt), y
+@partial(jax.jit, static_argnums=(2,))
+def rk4(state, t_crt, f, *diff_args):
+    y_prev, t_prev = state
+    h = t_crt - t_prev
+    k1 = h * f(y_prev, t_prev, *diff_args)
+    k2 = h * f(y_prev + k1/2., t_prev + h/2., *diff_args)
+    k3 = h * f(y_prev + k2/2., t_prev + h/2., *diff_args)
+    k4 = h * f(y_prev + k3, t_prev + h, *diff_args)
+    y_crt = y_prev + 1./6 * (k1 + 2 * k2 + 2 * k3 + k4)
+    return (y_crt, t_crt), y_crt
 
 
-    # _, ys = jax.lax.scan(step, (y0, ts[0]), ts[1:])
+@partial(jax.jit, static_argnums=(2,))
+def explicit_euler(state, t_crt, f, *diff_args):
+    y_prev, t_prev = state
+    h = t_crt - t_prev
+    y_crt = y_prev + h * f(y_prev, t_prev, *diff_args)
+    return (y_crt, t_crt), y_crt
+
+
+@partial(jax.jit, static_argnums=(2,))
+def leapfrog(state, t_crt, f, *diff_args):
+    y_prev, t_prev = state
+    h = t_crt - t_prev
+    y_prev_unflatten = y_prev.reshape(-1, 13)
+
+    # x_prev, q_prev are at time step n
+    # v_prev, w_prev are at time step n-1/2
+    x_prev = y_prev_unflatten[:, 0:3]
+    q_prev = y_prev_unflatten[:, 3:7]
+    v_prev = y_prev_unflatten[:, 7:10]
+    w_prev = y_prev_unflatten[:, 10:13]
+
+    rhs = f(y_prev, t_prev, *diff_args)
+    rhs_unflatten = rhs.reshape(-1, 13)
+    rhs_v = rhs_unflatten[:, 7:10]
+    rhs_w = rhs_unflatten[:, 10:13]
+
+    # v_crt, w_crt are at time step n+1/2
+    v_crt = v_prev + h * rhs_v
+    w_crt = w_prev + h * rhs_w
+
+    # x_crt, q_crt are at time step n+1
+    x_crt = x_prev + h * v_crt
+    # Reference: https://doi.org/10.1016/j.powtec.2012.03.023
+    # Formula (A.5) in appendix for computing delta_q
+    w_crt_norm, w_crt_dir = get_unit_vectors(w_crt)
+    delta_q = np.hstack((np.cos(w_crt_norm*h/2)[:, None], w_crt_dir * np.sin(w_crt_norm*h/2)[:, None]))
+    q_crt = quats_mul(delta_q, q_prev)
+
+    y_crt_unflatten = np.hstack((x_crt, q_crt, v_crt, w_crt))
+    y_crt = y_crt_unflatten.reshape(-1)
+    return (y_crt, t_crt), y_crt
+
+
+def odeint_helper(stepper, f, y0, ts, *diff_args):
+
+    def stepper_partial(state, t_crt):
+        return stepper(state, t_crt, f, *diff_args)
+
+    # _, ys = jax.lax.scan(stepper_partial, (y0, ts[0]), ts[1:])
 
     ys = []
     energy = []
     state = (y0, ts[0])
     for (i, t_crt) in enumerate(ts[1:]):
-        state, y = step(state, t_crt)
-        # ys.append(y)
-        # print("break")
+        state, y = stepper_partial(state, t_crt)
         if i % 20 == 0:
-            # e = compute_energy(radii, y)
-            # print(f"\nstep {i}, total energy={e}, quaternion square sum: {np.sum(y[3:7]**2)}")
             print(f"step {i}")
             if not np.all(np.isfinite(y)):
-                print(f"Found np.inf or np.nan in y - stop the program")  
-                # print(y)              
+                print(f"Found np.inf or np.nan in y - stop the program")             
                 exit()
         ys.append(y)
-            # energy.append(e)
-    # energy = np.array(energy)
     ys = np.array(ys)
-
     return ys
 
 
@@ -110,7 +144,7 @@ def optimize(initials, ts, obj_func, state_rhs_func, bounds=None):
     def objective(x):
         print(f"\n######################### Evaluating objective value - step {objective.counter}")
         y0, diff_args = unravel(x)
-        ys = odeint(state_rhs_func, y0, ts, *diff_args)
+        ys = odeint(rk4, state_rhs_func, y0, ts, *diff_args)
         obj_val = obj_func(ys[-1])
         objective.aug0 = (ys[-1], jax.grad(obj_func)(ys[-1]), tree_map(np.zeros_like, diff_args))
         objective.diff_args = diff_args
@@ -132,7 +166,7 @@ def optimize(initials, ts, obj_func, state_rhs_func, bounds=None):
         
         aug_args = ((ys, ts), diff_args)
 
-        ys_bwd, ys_bar, diff_args_bar = odeint(aug_rhs_func, aug0, -ts[::-1], *aug_args)
+        ys_bwd, ys_bar, diff_args_bar = odeint(rk4, aug_rhs_func, aug0, -ts[::-1], *aug_args)
         der_val, _ = ravel_pytree(tree_map(lambda x: x[-1], [ys_bar, diff_args_bar]))
 
         # fig = plt.figure()
@@ -178,10 +212,7 @@ def optimize(initials, ts, obj_func, state_rhs_func, bounds=None):
 
 def simulate(initials, ts, state_rhs_func):
     y0, diff_args = initials
-    ys = odeint(state_rhs_func, y0, ts, *diff_args)
-
-    # plot_energy(energy, f'data/pdf/energy_{object_name}.pdf')
-
+    ys = odeint(leapfrog, state_rhs_func, y0, ts, *diff_args)
     return ys
 
 

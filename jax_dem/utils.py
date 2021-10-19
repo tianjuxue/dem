@@ -29,7 +29,7 @@ quats_mul = jax.vmap(quat_mul, in_axes=(0, 0), out_axes=0)
 
 def rotate_vector(q, vectors):
     '''
-    Rotate rank 1 tensor (i.e., a vector) according to the quaternion q
+    Rotate rank 1 tensor (i.e., a vector) by quaternion q
     '''
     rot = get_rot_mat(q)
     vectors_rotated = vectors @ rot.T
@@ -40,8 +40,27 @@ rotate_vector_batch = jax.vmap(rotate_vector, in_axes=(0, 0), out_axes=0)
 
 def rotate_tensor(q, tensors):
     '''
-    Rotate rank 2 tensor according to the quaternion q
+    Rotate rank 2 tensor by quaternion q
     '''
     rot = get_rot_mat(q)
     tensors_rotated = rot @ tensors @ rot.T
     return tensors_rotated
+
+
+def norm(x):
+    '''
+    Safe norm to avoid jax.grad yielding np.nan at singular point
+    '''
+    x = np.sum(x**2, axis=-1)
+    safe_x = np.where(x > 0., x, 0.)
+    return np.sqrt(safe_x)
+
+
+def get_unit_vectors(vectors):
+    '''
+    Get normalized vectors
+    '''
+    norms = norm(vectors)
+    norms_reg = np.where(norms == 0., 1., norms)
+    unit_vectors = vectors / norms_reg[..., None]
+    return norms, unit_vectors
