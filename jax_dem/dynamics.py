@@ -31,6 +31,9 @@ class Parameter:
     ptcl_split: np.ndarray = None
     ptcl_arm_ref_arr: np.ndarray = None
     radii_arr: np.ndarray = None
+    obj_rope_split: np.ndarray = None
+    ptcl_rope_split: np.ndarray = None
+    rope_radii: np.ndarray = None
 
 
 def box_env(parameter):
@@ -94,7 +97,7 @@ def compute_sphere_inertia_tensors(radii):
 #     return forces
   
 
-def compute_reactions_helper(parameter, intersected_distances, unit_vectors, relative_v, relative_w, reduced_mass, reduced_radius, arms):
+def compute_reactions_helper(parameter, intersected_distances, unit_vectors, relative_v, relative_w, reduced_mass, reduced_radius, arms, no_friction_mask):
     rolling_fric_coeff = parameter.rolling_fric_coeff
 
     Coulomb_fric_coeff = parameter.Coulomb_fric_coeff
@@ -103,7 +106,6 @@ def compute_reactions_helper(parameter, intersected_distances, unit_vectors, rel
     tangent_fric_coeff = parameter.tangent_fric_coeff
 
     elastic_normal_forces = -normal_contact_stiffness * np.where(intersected_distances > 0., intersected_distances, 0.)[..., None] * unit_vectors
-
     normal_velocity = np.sum(relative_v * unit_vectors, axis=-1)[..., None] * unit_vectors
     damping_forces = 2 * damping_coeff * np.where(intersected_distances > 0., reduced_mass, 0.)[..., None] * normal_velocity
 
@@ -112,6 +114,8 @@ def compute_reactions_helper(parameter, intersected_distances, unit_vectors, rel
     friction_norms, friction_unit_vectors = get_unit_vectors(friction)
     friction_bounds = Coulomb_fric_coeff * norm(elastic_normal_forces)
     friction_forces = np.where(friction_norms < friction_bounds, friction_norms, friction_bounds)[..., None] * friction_unit_vectors
+
+    friction_forces = np.where(no_friction_mask, 0., friction_forces)
 
     forces = elastic_normal_forces + damping_forces + friction_forces
 
@@ -123,101 +127,6 @@ def compute_reactions_helper(parameter, intersected_distances, unit_vectors, rel
     torques = np.cross(arms, forces) + rolling_torque
 
     return forces, torques
-
-
-# @jax.jit
-# @partial(jax.jit, static_argnums=(3,))
-# def state_rhs_func_prm(state, t, parameter, env):
-
-#     radii = parameter.radii
-
-#     n_objects = state.shape[1]
-#     x = state[0:3].T
-#     q = state[3:7].T
-#     v = state[7:10].T
-#     w = state[10:13].T
-#     inertias, vol = compute_sphere_inertia_tensors(radii)
-
-#     box_size = onp.array([100., 100., 100.])
-#     cell_capacity = 5
-#     minimum_cell_size = 1.
-
-#     cell_id, indices = cell_fn(x, box_size, minimum_cell_size, cell_capacity)
-
-#     neighour_indices = tuple(indices_1_to_27(indices))
-
-#     neighour_ids = cell_id[neighour_indices].reshape(n_objects, -1) # (n_objects, dim**3 * cell_capacity)
-
-#     neighour_ids = prune_neighbour_list(x, radii, neighour_ids)
-
-#     neighour_x = x[neighour_ids]
-#     neighour_v = v[neighour_ids]
-#     neighour_w = w[neighour_ids]
-#     neighour_radii = radii[neighour_ids]
-#     neighour_vol = vol[neighour_ids]
-
-#     mutual_vectors = neighour_x - x[:, None, :]
-#     mutual_distances,  mutual_unit_vectors = get_unit_vectors(mutual_vectors)
-#     mutual_intersected_distances = neighour_radii + radii[:, None] - mutual_distances
-#     mutual_contact_points = x[:, None, :] + (radii[:, None] - mutual_intersected_distances / 2.)[:, :, None] * mutual_unit_vectors
-#     mutual_arms_self = mutual_contact_points - x[:, None, :]
-#     mutual_arms_other = mutual_contact_points - neighour_x
-#     mutual_relative_v = neighour_v + np.cross(neighour_w, mutual_arms_other) - v[:, None, :] - np.cross(w[:, None, :], mutual_arms_self)
-#     mutual_relative_w = neighour_w - w[:, None, :] 
-#     mutual_reduced_mass = neighour_vol * vol[:, None] / (neighour_vol + vol[:, None])
-#     mutual_reduced_radius = neighour_radii * radii[:, None] / (neighour_radii + radii[:, None])
-
-#     mutual_forces, mutual_torques = compute_reactions_helper(parameter, mutual_intersected_distances, mutual_unit_vectors, mutual_relative_v, 
-#         mutual_relative_w, mutual_reduced_mass, mutual_reduced_radius, mutual_arms_self)
-
-#     mask = np.logical_or(neighour_ids == n_objects, neighour_ids == np.arange(n_objects)[:, None])[:, :, None]
-#     mutual_forces = np.where(mask, 0., mutual_forces)
-#     mutual_torques = np.where(mask, 0., mutual_torques)
-
-#     mutual_reactions = np.concatenate((np.sum(mutual_forces, axis=1), np.sum(mutual_torques, axis=1)), axis=-1)
-
-
-#     env_distance_value, env_velocity = env(parameter)
-#     env_distance_values = jax.vmap(env_distance_value, in_axes=0, out_axes=0)
-#     env_distance_grad = jax.grad(env_distance_value, argnums=0)
-#     env_distance_grads = jax.vmap(env_distance_grad, in_axes=0, out_axes=0)
-#     env_velocities = jax.vmap(env_velocity, in_axes=0, out_axes=0)
-
-#     env_intersected_distances = radii - env_distance_values(x)
-#     env_unit_vectors = -env_distance_grads(x)
-#     env_contact_points = x + (radii - env_intersected_distances / 2.)[:, None] * env_unit_vectors
-#     env_arms = env_contact_points - x
-#     env_relative_v = env_velocities(env_contact_points) - v - np.cross(w, env_arms)
-#     env_relative_w = -w
-#     env_reduced_mass = vol
-#     env_reduced_radius = radii
-
-#     env_forces, env_torques = compute_reactions_helper(parameter, env_intersected_distances, env_unit_vectors, env_relative_v, 
-#         env_relative_w, env_reduced_mass, env_reduced_radius, env_arms)
-#     env_reactions = np.concatenate((env_forces, env_torques), axis=-1)
-
-#     contact_reactions = mutual_reactions + env_reactions
-
-#     dx_rhs = v
-#     w_quat = np.concatenate([np.zeros((1, n_objects)), w.T], axis=0)
-#     dq_rhs = 0.5 * quats_mul(w_quat.T, q)
-#     contact_forces = contact_reactions[:, :dim]
-#     dv_rhs = (contact_forces / vol[:, None] + np.array([[0., 0., -parameter.gravity]]))
-#     contact_torques = contact_reactions[:, dim:]
-#     wIw = np.cross(w, np.squeeze(inertias @  w[..., None]))
-#     I_inv = np.linalg.inv(inertias) 
-#     dw_rhs = np.squeeze((I_inv @ (contact_torques - wIw)[..., None]), axis=-1)
-#     rhs = np.concatenate([dx_rhs, dq_rhs, dv_rhs, dw_rhs], axis=1).T
-
-#     particle_out_of_env = env_distance_values(x) < 0
-#     cell_overflow = np.sum(cell_id != n_objects) != n_objects
-#     # print(f"particle out of environment? {np.any(particle_out_of_env)}")
-#     # print(f"cell overflow? {np.sum(cell_id != n_objects)}")
-#     assert_condition = np.logical_or(particle_out_of_env, cell_overflow)
-#     rhs = np.where(assert_condition, np.nan, rhs)
-   
-#     return rhs
-
 
 
 def ptcl_state_rhs_func_prm(state, t, parameter, env):
@@ -260,9 +169,10 @@ def helper_partition(x, v, w, parameter, env, radii, vols):
     n_particles = x.shape[0]
 
     box_size = onp.array([100., 100., 100.])
-    cell_capacity = 5
+    # default = 5
+    cell_capacity = 5 
+    # cell_capacity = 10
     minimum_cell_size = 1.
-
 
     cell_id, indices = cell_fn(x, box_size, minimum_cell_size, cell_capacity)
     neighour_indices = tuple(indices_1_to_27(indices))
@@ -288,8 +198,13 @@ def helper_partition(x, v, w, parameter, env, radii, vols):
 
     # mutual_forces = compute_forces_helper(parameter, mutual_intersected_distances, mutual_unit_vectors, mutual_relative_v, mutual_reduced_mass)
 
+    ptcl_rope_split = parameter.ptcl_rope_split
+    mutual_no_friction_mask = np.logical_or(neighour_ids >= ptcl_rope_split, np.arange(neighour_ids.shape[0])[:, None] >= ptcl_rope_split)[:, :, None]
     mutual_forces, mutual_torques = compute_reactions_helper(parameter, mutual_intersected_distances, mutual_unit_vectors, mutual_relative_v, 
-        mutual_relative_w, mutual_reduced_mass, mutual_reduced_radius, mutual_arms_self)
+        mutual_relative_w, mutual_reduced_mass, mutual_reduced_radius, mutual_arms_self, mutual_no_friction_mask)
+
+    no_internal_rope_force_mask = np.logical_and(neighour_ids >= ptcl_rope_split, np.arange(neighour_ids.shape[0])[:, None] >= ptcl_rope_split)[:, :, None]
+    mutual_forces = np.where(no_internal_rope_force_mask, 0., mutual_forces)
 
     mask = np.logical_or(neighour_ids == n_particles, neighour_ids == np.arange(n_particles)[:, None])[:, :, None]
 
@@ -311,15 +226,20 @@ def helper_partition(x, v, w, parameter, env, radii, vols):
     env_reduced_mass = vols
     env_reduced_radius = radii
 
+    env_no_friction_mask = (np.arange(neighour_ids.shape[0]) >= ptcl_rope_split)[:, None]
+
     env_forces, env_torques = compute_reactions_helper(parameter, env_intersected_distances, env_unit_vectors, env_relative_v, 
-        env_relative_w, env_reduced_mass, env_reduced_radius, env_arms)
+        env_relative_w, env_reduced_mass, env_reduced_radius, env_arms, env_no_friction_mask)
 
     particle_out_of_env = env_distance_values(x) < 0
     cell_overflow = np.sum(cell_id != n_particles) != n_particles
     # print(f"particle out of environment? {np.any(particle_out_of_env)}")
-    # print(f"cell overflow? {np.sum(cell_id != n_particles)}")
+    # print(f"cell overflow? Captured cells = {np.sum(cell_id != n_particles)}, true cells = {n_particles}")
     assert_condition = np.logical_or(particle_out_of_env, cell_overflow)
-    mutual_forces = np.where(assert_condition[:, None, None], np.nan, mutual_forces)
+
+
+    # TODO:
+    # mutual_forces = np.where(assert_condition[:, None, None], np.nan, mutual_forces)
 
     return mutual_forces, mutual_torques, env_forces, env_torques, mutual_contact_points, env_contact_points
 
@@ -362,7 +282,7 @@ def obj_state_rhs_func_prm_nonuniform(state, t, parameter, env):
     obj_v = state[:, 7:10]
     obj_w = state[:, 10:13]
 
-    ptcl_x_list, ptcl_q_list, ptcl_v_list, ptcl_w_list = obj_to_ptcl(obj_x, obj_q, obj_v, obj_w, ptcl_arm_ref_list)
+    ptcl_x_list, ptcl_q_list, ptcl_v_list, ptcl_w_list = obj_to_ptcl_nonuniform(obj_x, obj_q, obj_v, obj_w, ptcl_arm_ref_list)
 
     ptcl_x = np.vstack(ptcl_x_list)
     ptcl_v = np.vstack(ptcl_v_list)
@@ -370,6 +290,7 @@ def obj_state_rhs_func_prm_nonuniform(state, t, parameter, env):
     radii = np.hstack(radii_list)
 
     obj_info = jax.tree_multimap(lambda x, y: compute_object_inertia_tensor(x, y), ptcl_x_list, radii_list)
+    # Transpose a list of trees to a tree of lists
     obj_inertias, obj_vols, _ = jax.tree_multimap(lambda *xs: np.stack(xs), *obj_info)
 
     inertias, vols = compute_sphere_inertia_tensors(radii)
@@ -411,30 +332,51 @@ obj_to_ptcl_uniform_batch = jax.vmap(obj_to_ptcl_uniform, in_axes=(0, 0, 0, 0, N
 
 
 def obj_state_rhs_func_prm_uniform(state, t, parameter, env):
+    obj_rope_split = parameter.obj_rope_split
+    ptcl_rope_split = parameter.ptcl_rope_split
+
     ptcl_arm_ref_arr = parameter.ptcl_arm_ref_arr
-    radii_arr = parameter.radii_arr
-    radii = radii_arr.reshape(-1)
+    obj_radii_arr = parameter.radii_arr
+    obj_state = state[:obj_rope_split]
+    obj_radii = obj_radii_arr.reshape(-1)
     n_obj = ptcl_arm_ref_arr.shape[0]
     n_ptcl_per_obj = ptcl_arm_ref_arr.shape[1]
 
-    obj_x = state[:, 0:3]
-    obj_q = state[:, 3:7]
-    obj_v = state[:, 7:10]
-    obj_w = state[:, 10:13]
+    obj_x = obj_state[:, 0:3]
+    obj_q = obj_state[:, 3:7]
+    obj_v = obj_state[:, 7:10]
+    obj_w = obj_state[:, 10:13]
 
     # arr: (n_obj, n_ptcl_per_obj, ...)
     ptcl_x_arr, ptcl_q_arr, ptcl_v_arr, ptcl_w_arr = obj_to_ptcl_uniform(obj_x, obj_q, obj_v, obj_w, ptcl_arm_ref_arr)
+    obj_inertias, obj_vols, _  = compute_object_inertia_tensor_batch(ptcl_x_arr, obj_radii_arr)
 
-    obj_inertias, obj_vols, _  = compute_object_inertia_tensor_batch(ptcl_x_arr, radii_arr)
+    if obj_rope_split < state.shape[0]:
+        rope_radii = parameter.rope_radii
+        rope_state = state[obj_rope_split:]
+        n_rope = rope_state.shape[0]
+        rope_x = rope_state[:, 0:3]
+        rope_q = rope_state[:, 3:7]
+        rope_v = rope_state[:, 7:10]
+        rope_w = rope_state[:, 10:13]
+        radii = np.hstack((obj_radii, rope_radii))
+        rope_inertias, rope_vols = compute_sphere_inertia_tensors(rope_radii)
+        x = np.vstack((ptcl_x_arr.reshape(-1, dim), rope_x))
+        v = np.vstack((ptcl_v_arr.reshape(-1, dim), rope_v))
+        w = np.vstack((ptcl_w_arr.reshape(-1, dim), rope_w))
+    else:
+        radii = obj_radii
+        x = ptcl_x_arr.reshape(-1, dim)
+        v = ptcl_v_arr.reshape(-1, dim)
+        w = ptcl_w_arr.reshape(-1, dim)
 
     inertias, vols = compute_sphere_inertia_tensors(radii)
-    mutual_forces, _, env_forces, _, mutual_contact_points, env_contact_points \
-     = helper_partition(ptcl_x_arr.reshape(-1, dim), ptcl_v_arr.reshape(-1, dim), ptcl_w_arr.reshape(-1, dim), parameter, env, radii, vols)
+    mutual_forces, _, env_forces, _, mutual_contact_points, env_contact_points = helper_partition(x, v, w, parameter, env, radii, vols)
 
-    mutual_forces_arr = mutual_forces.reshape(n_obj, n_ptcl_per_obj, -1, dim)
-    env_forces_arr = env_forces.reshape(n_obj, n_ptcl_per_obj, dim)
-    mutual_contact_points_arr = mutual_contact_points.reshape(n_obj, n_ptcl_per_obj, -1, dim)
-    env_contact_points_arr = env_contact_points.reshape(n_obj, n_ptcl_per_obj, dim)
+    mutual_forces_arr = mutual_forces[:ptcl_rope_split].reshape(n_obj, n_ptcl_per_obj, -1, dim)
+    env_forces_arr = env_forces[:ptcl_rope_split].reshape(n_obj, n_ptcl_per_obj, dim)
+    mutual_contact_points_arr = mutual_contact_points[:ptcl_rope_split].reshape(n_obj, n_ptcl_per_obj, -1, dim)
+    env_contact_points_arr = env_contact_points[:ptcl_rope_split].reshape(n_obj, n_ptcl_per_obj, dim)
    
     obj_mutual_torques = np.sum(np.cross(mutual_contact_points_arr - obj_x[:, None, None, :], mutual_forces_arr), axis=(1, 2))
     obj_env_torques = np.sum(np.cross(env_contact_points_arr - obj_x[:, None, :], env_forces_arr), axis=1)
@@ -442,13 +384,68 @@ def obj_state_rhs_func_prm_uniform(state, t, parameter, env):
 
     obj_mutual_forces = np.sum(mutual_forces_arr, axis=(1, 2))
     obj_env_forces = np.sum(env_forces_arr, axis=1)
-    gravity_forces = np.array([[0., 0., -parameter.gravity]]) * obj_vols[:, None]
+    obj_gravity_forces = np.array([[0., 0., -parameter.gravity]]) * obj_vols[:, None]
+    obj_damping_force = -1e-1 * obj_v
 
-    obj_forces = obj_mutual_forces + obj_env_forces + gravity_forces
+    obj_forces = obj_mutual_forces + obj_env_forces + obj_gravity_forces + obj_damping_force
 
-    rhs = compute_rhs(obj_q, obj_v, obj_w, obj_forces, obj_torques, obj_inertias, obj_vols)
+
+    # TODO:
+    # zero_mask = np.zeros((n_obj, 1))
+    # zero_mask = jax.ops.index_update(zero_mask, jax.ops.index[(0, 5, 10, 15, 20), (0, 0, 0, 0, 0)], 1)
+    # obj_forces = np.where(zero_mask, 0., obj_forces)
+    # obj_torques = np.where(zero_mask, 0., obj_torques)
+
+    obj_rhs = compute_rhs(obj_q, obj_v, obj_w, obj_forces, obj_torques, obj_inertias, obj_vols)
    
+    if obj_rope_split < state.shape[0]:
+
+        rope_vols = 5*rope_vols
+
+        rope_mutual_forces = np.sum(mutual_forces[ptcl_rope_split:], axis=1)
+        rope_env_forces = env_forces[ptcl_rope_split:]
+        rope_gravity_forces = np.array([[0., 0., -parameter.gravity]]) * rope_vols[:, None]
+        rope_potential_forces = -rope_potential_grad(rope_x, rope_radii)
+
+        # rope_damping_force = -5*1e-1 * rope_v
+        rope_damping_force = -1. * rope_v
+
+        # rope_forces = rope_mutual_forces + rope_env_forces + rope_potential_forces + rope_damping_force
+        rope_forces = rope_mutual_forces + rope_env_forces + rope_gravity_forces + rope_potential_forces + rope_damping_force
+
+        # TODO
+        force_mask = np.zeros((n_rope, 1))
+        force_mask = jax.ops.index_update(force_mask, jax.ops.index[(0, -1), (0, 0)], 1)
+        rope_forces = np.where(force_mask, 0., rope_forces)
+        
+        rope_torques = np.zeros((n_rope, dim))
+
+        rope_rhs = compute_rhs(rope_q, rope_v, rope_w, rope_forces, rope_torques, rope_inertias, rope_vols)
+
+        rhs = np.vstack((obj_rhs, rope_rhs))
+
+    else:
+        rhs = obj_rhs
+
     return rhs
+
+
+def rope_potential(rope_x, rope_radii):
+    inter_dist = rope_radii[:-1] + rope_radii[1:]
+    norms, _ = get_unit_vectors(np.diff(rope_x, axis=0))  
+    delta_x = norms - inter_dist
+    energy = np.sum(np.where(delta_x < 0., 0., 1e5 * delta_x**2))
+    return energy
+
+def rope_potential_loop(rope_x, rope_radii):
+    inter_dist = rope_radii + np.roll(rope_radii, 1)
+    norms, _ = get_unit_vectors(rope_x - np.roll(rope_x, 1, axis=0)) 
+    delta_x = norms - inter_dist
+    energy = np.sum(np.where(delta_x < 0., 0., 1e5 * delta_x**2))
+    return energy
+
+rope_potential_grad = jax.grad(rope_potential)
+rope_potential_loop_grad = jax.grad(rope_potential_loop)
 
 
 def obj_states_to_ptcl_states(obj_ys, ptcl_arm_ref_arr):
@@ -490,6 +487,6 @@ def get_state_rhs_func(state_rhs_func_prm, diff_keys, env, nondiff_kwargs):
         kwargs = dict(zip(diff_keys, diff_args))
         parameter = dataclasses.replace(parameter, **kwargs)
         return state_rhs_func_prm(state, t, parameter, env)
-    return jax.jit(state_rhs_func)
+    return state_rhs_func
 
  

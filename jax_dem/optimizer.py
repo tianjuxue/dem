@@ -9,6 +9,9 @@ from jax_dem.io import vedo_plot
 from jax_dem.utils import get_unit_vectors, quats_mul
 import scipy.optimize as opt
 import matplotlib.pyplot as plt
+from jax_dem.arguments import args
+
+dim = args.dim
 
 
 def ravel_first_arg(f, unravel):
@@ -24,10 +27,10 @@ def ravel_first_arg_(unravel, y_flat, *diff_args):
 
 
 # @partial(jax.jit, static_argnums=(0,))
-def odeint(stepper, f, y0, ts, *diff_args):
+def odeint_ravelled(stepper, f, y0, ts, *diff_args):
     y0, unravel = ravel_pytree(y0)
     f = ravel_first_arg(f, unravel)
-    out = odeint_helper(stepper, f, y0, ts, *diff_args)
+    out = odeint(stepper, f, y0, ts, *diff_args)
     return jax.vmap(unravel)(out)
 
 
@@ -55,19 +58,17 @@ def explicit_euler(state, t_crt, f, *diff_args):
 def leapfrog(state, t_crt, f, *diff_args):
     y_prev, t_prev = state
     h = t_crt - t_prev
-    y_prev_unflatten = y_prev.reshape(-1, 13)
 
     # x_prev, q_prev are at time step n
     # v_prev, w_prev are at time step n-1/2
-    x_prev = y_prev_unflatten[:, 0:3]
-    q_prev = y_prev_unflatten[:, 3:7]
-    v_prev = y_prev_unflatten[:, 7:10]
-    w_prev = y_prev_unflatten[:, 10:13]
+    x_prev = y_prev[:, 0:3]
+    q_prev = y_prev[:, 3:7]
+    v_prev = y_prev[:, 7:10]
+    w_prev = y_prev[:, 10:13]
 
     rhs = f(y_prev, t_prev, *diff_args)
-    rhs_unflatten = rhs.reshape(-1, 13)
-    rhs_v = rhs_unflatten[:, 7:10]
-    rhs_w = rhs_unflatten[:, 10:13]
+    rhs_v = rhs[:, 7:10]
+    rhs_w = rhs[:, 10:13]
 
     # v_crt, w_crt are at time step n+1/2
     v_crt = v_prev + h * rhs_v
@@ -81,12 +82,11 @@ def leapfrog(state, t_crt, f, *diff_args):
     delta_q = np.hstack((np.cos(w_crt_norm*h/2)[:, None], w_crt_dir * np.sin(w_crt_norm*h/2)[:, None]))
     q_crt = quats_mul(delta_q, q_prev)
 
-    y_crt_unflatten = np.hstack((x_crt, q_crt, v_crt, w_crt))
-    y_crt = y_crt_unflatten.reshape(-1)
+    y_crt = np.hstack((x_crt, q_crt, v_crt, w_crt))
     return (y_crt, t_crt), y_crt
 
 
-def odeint_helper(stepper, f, y0, ts, *diff_args):
+def odeint(stepper, f, y0, ts, *diff_args):
 
     def stepper_partial(state, t_crt):
         return stepper(state, t_crt, f, *diff_args)
@@ -94,18 +94,38 @@ def odeint_helper(stepper, f, y0, ts, *diff_args):
     # _, ys = jax.lax.scan(stepper_partial, (y0, ts[0]), ts[1:])
 
     ys = []
-    energy = []
     state = (y0, ts[0])
     for (i, t_crt) in enumerate(ts[1:]):
         state, y = stepper_partial(state, t_crt)
         if i % 20 == 0:
             print(f"step {i}")
             if not np.all(np.isfinite(y)):
-                print(f"Found np.inf or np.nan in y - stop the program")             
+                print(f"Found np.inf or np.nan in y - stop the program") 
+                for ind in range(20):
+                    print(f"ind =  {ind}")
+                    print(ys[ind - 20])      
                 exit()
         ys.append(y)
     ys = np.array(ys)
     return ys
+
+
+def lerp(ts, ys, t):
+    assert len(ts) == len(ys), f"ts.shape = {ts.shape}, ys.shape = {ys.shape}"
+    # assert t >= ts[0] and t <= ts[-1]
+
+    # Assumption: Uniform time step
+    dt = ts[1] - ts[0]
+    ts = np.hstack((ts, ts[-1] + dt))
+    ys = np.vstack((ys, ys[-1:, ...]))
+
+    left_index = np.array((t - ts[0]) / dt, dtype=np.int32)
+    right_index = left_index + 1
+    y_lerp = (ys[left_index] * (ts[right_index] - t) + ys[right_index] * (t - ts[left_index])) / dt
+
+    return y_lerp
+
+lerp_batch = jax.vmap(lerp, in_axes=(None, None, 0), out_axes=0)
 
 
 def get_aug_rhs_func(state_rhs_func):
@@ -114,25 +134,31 @@ def get_aug_rhs_func(state_rhs_func):
 
         (ys, ts), diff_args = aug_args
 
-        # Assumption: Uniform time step
-        dt = ts[1] - ts[0]
-        ts = np.hstack((ts, ts[-1] + dt))
-        ys = np.vstack((ys, ys[-1:, ...]))
+        # dt = ts[1] - ts[0]
+        # ts = np.hstack((ts, ts[-1] + dt))
+        # ys = np.vstack((ys, ys[-1:, ...]))
+        # t = -neg_t
+        # left_index = np.array((t - ts[0]) / dt, dtype=np.int32)
+        # right_index = left_index + 1
+        # y_lerp = (ys[left_index] * (ts[right_index] - t) + ys[right_index] * (t - ts[left_index])) / dt
 
-        assert len(ts) == len(ys), f"ts.shape = {ts.shape}, ys.shape = {ys.shape}"
-
-        t = -neg_t
-        left_index = np.array((t - ts[0]) / dt, dtype=np.int32)
-        right_index = left_index + 1
-        y_lerp = (ys[left_index] * (ts[right_index] - t) + ys[right_index] * (t - ts[left_index])) / dt
-
-        # print(f"left_index = {left_index}, right_index = {right_index}, t = {t}")
-        # print(f"y_lerp=\n{y_lerp}")
+        # Need tests
+        y_lerp = lerp(ts, ys, -neg_t)
 
         y_dot, vjpfun = jax.vjp(lambda y, *diff_args: state_rhs_func(y, -neg_t, *diff_args), y_lerp, *diff_args)
-        return (-y_dot, *vjpfun(y_bar))
+        y_bar_dot, *diff_args_bar_dot = vjpfun(y_bar)
 
-    return jax.jit(aug_rhs_func)
+        # If objective function is an integral over time?
+        # def obj_func(yf):
+        #     xf = yf[:, :3]
+        #     center = np.mean(xf, axis=0).reshape(1, dim)
+        #     return -np.sum((xf - center)**2)/1e5
+        # g_fn = jax.grad(obj_func)
+        # y_bar_dot = y_bar_dot + g_fn(y_lerp)
+
+        return (-y_dot, y_bar_dot, *diff_args_bar_dot)
+
+    return aug_rhs_func
 
 
 def optimize(initials, ts, obj_func, state_rhs_func, bounds=None):
@@ -144,9 +170,12 @@ def optimize(initials, ts, obj_func, state_rhs_func, bounds=None):
     def objective(x):
         print(f"\n######################### Evaluating objective value - step {objective.counter}")
         y0, diff_args = unravel(x)
-        ys = odeint(rk4, state_rhs_func, y0, ts, *diff_args)
+        ys = odeint_ravelled(rk4, state_rhs_func, y0, ts, *diff_args)
         obj_val = obj_func(ys[-1])
+
         objective.aug0 = (ys[-1], jax.grad(obj_func)(ys[-1]), tree_map(np.zeros_like, diff_args))
+        # objective.aug0 = (ys[-1], tree_map(np.zeros_like, ys[-1]), tree_map(np.zeros_like, diff_args))
+
         objective.diff_args = diff_args
         objective.ys = np.vstack((y0[None, ...], ys))
         objective.counter += 1
@@ -166,17 +195,15 @@ def optimize(initials, ts, obj_func, state_rhs_func, bounds=None):
         
         aug_args = ((ys, ts), diff_args)
 
-        ys_bwd, ys_bar, diff_args_bar = odeint(rk4, aug_rhs_func, aug0, -ts[::-1], *aug_args)
-        der_val, _ = ravel_pytree(tree_map(lambda x: x[-1], [ys_bar, diff_args_bar]))
+        ys_bwd, y_bars, diff_args_bars = odeint_ravelled(rk4, aug_rhs_func, aug0, -ts[::-1], *aug_args)
+        # ys_bwd, y_bars, diff_args_bars = odeint_ravelled(rk4, aug_rhs_func, aug0, -ts[-1:-20:-1], *aug_args)
 
-        # fig = plt.figure()
-        # plt.plot(ts[-2::-1], ys_bar[:, 0, 0], linestyle='-', marker='o', color='red')
-        # plt.show()
+        der_val, _ = ravel_pytree(tree_map(lambda x: x[-1], [y_bars, diff_args_bars]))
 
         # print(f"ys_bwd[-1] = \n{ys_bwd[-1]}")
-        # print(f"der_y0 = \n{ys_bar[-1]}")
-        # print(f"der_diff_args = \n{diff_args_bar[0][-1]}")
-        print(f"der_diff_args = \n{diff_args_bar}")
+        print(f"der_y0 = \n{y_bars[-1]}")
+        # print(f"der_diff_args = \n{diff_args_bars[0][-1]}")
+        # print(f"der_diff_args = \n{diff_args_bars}")
         # print(f"der = {der_val}")
     
         exit()
